@@ -33,7 +33,8 @@
   const ctx = {
     presentation: {
       slides: { get items(){ return slides.map(s => ({ id: s.id, shapes: coll(s.shapes), setSelectedShapes(ids){ selection = { slide: slides.indexOf(s), shapes: ids }; } })); }, load(){},
-        getItem(id){ const s = slides.find(x=>x.id===id); return { setSelectedShapes(ids){ selection = { slide: slides.indexOf(s), shapes: ids }; } }; } },
+        getItem(id){ const s = slides.find(x=>x.id===id); return { setSelectedShapes(ids){ selection = { slide: slides.indexOf(s), shapes: ids }; },
+          shapes: { getItem(sid){ const sh = s.shapes.find(x => x.id === String(sid)); if (!sh) throw new Error("ItemNotFound"); return sh; } } }; } },
       getSelectedShapes(){ const s = slides[selection.slide]; return coll(s.shapes.filter(x => selection.shapes.includes(x.id))); },
       getSelectedSlides(){ return coll([{ id: slides[selection.slide].id }]); },
       getSelectedTextRangeOrNullObject(){ const s = slides[selection.slide].shapes.find(x => selection.shapes.includes(x.id)); if(!s) return { isNullObject:true }; const tr = s.textFrame.textRange; return { isNullObject:false, set text(v){ tr.text += v; } }; },

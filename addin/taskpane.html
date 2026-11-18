@@ -58,11 +58,13 @@
     </section>
 
     <section>
-      <h2>Neue Komponente</h2>
-      <p class="hint">Markiere genau eine Form oder ein Textfeld. Sie wird zum <b>Master</b>.</p>
+      <h2>Neue Komponente / Variante</h2>
+      <p class="hint">Markiere genau eine Form oder ein Textfeld. Sie wird zum <b>Master</b>.
+        Für eine <b>Variante</b> (z. B. Button in Rot) eine abgewandelte Kopie markieren und „Variante von …“ wählen.</p>
       <form id="comp-add" class="row">
+        <select id="comp-of" aria-label="Art"><option value="">Neue Komponente</option></select>
         <input id="comp-name" placeholder="Name, z. B. Button" autocomplete="off" required />
-        <button type="submit" class="primary">Als Komponente anlegen</button>
+        <button type="submit" class="primary">Anlegen</button>
       </form>
     </section>
 

@@ -71,7 +71,50 @@ const root = path.join(__dirname, "..", "..", "addin");
   check(await p.evaluate(() => __pp.slides[0].shapes[1].name) === "Button", "Instanz gelöst");
   await p.click("#comp-list button:has-text('Löschen')"); await p.click("#comp-list button:has-text('Wirklich')"); await p.waitForTimeout(400);
   check(await p.evaluate(() => __pp.slides[1].shapes.find(x=>x.id==="9").name) === "Button", "Komponente gelöscht, Namen bereinigt");
+
+  // ---- Anpassungen pro Instanz (Overrides) ----
+  const shape = (sl, id) => p.evaluate(([sl,id]) => { const s = __pp.slides[sl].shapes.find(x=>x.id===String(id)); return { name: s.name, fill: s.fill.foregroundColor, text: s.textFrame.textRange.text, font: s.textFrame.textRange.font.color }; }, [sl,id]);
+  await p.evaluate(() => { __pp.slides[0].shapes.push(__pp.mkShape({ id: 20, name: "Karte", fill: "#336699", text: "{{Label}} für {{Kunde}}" })); });
+  await p.evaluate(() => __pp.select(0, [20])); await p.waitForTimeout(400);
+  await p.selectOption("#comp-of", ""); await p.fill("#comp-name", "Karte"); await p.click("#comp-add button"); await p.waitForTimeout(500);
+  await p.evaluate(() => { __pp.slides[1].shapes.push(__pp.mkShape({ id: 21, name: "◆ Karte ◆", text: "x" })); });
+  await p.click("#sync-all"); await p.waitForTimeout(400);
+  await p.evaluate(() => __pp.select(0, [20])); await p.waitForTimeout(400);
+  check((await p.textContent("#sel-actions")).includes("Standardwerte"), "Master zeigt Standardwerte");
+  await p.fill("#sel-actions .ovr input[type=text]", "Mehr erfahren"); await p.dispatchEvent("#sel-actions .ovr input[type=text]", "change"); await p.waitForTimeout(800);
+  check((await shape(0,20)).text === "Mehr erfahren für Northwind", "Master-Standardwert: " + (await shape(0,20)).text);
+  check((await shape(1,21)).text === "Mehr erfahren für Northwind", "Instanz erbt Standardwert: " + (await shape(1,21)).text);
+  await p.evaluate(() => __pp.select(1, [21])); await p.waitForTimeout(400);
+  check((await p.textContent("#sel-actions")).includes("Anpassungen dieser Instanz"), "Instanz zeigt Anpassungen");
+  await p.fill("#sel-actions .ovr input[type=text]", "Jetzt kaufen"); await p.dispatchEvent("#sel-actions .ovr input[type=text]", "change"); await p.waitForTimeout(800);
+  check((await shape(1,21)).text === "Jetzt kaufen für Northwind", "Instanz-Text überschrieben: " + (await shape(1,21)).text);
+  check((await shape(0,20)).text === "Mehr erfahren für Northwind", "Master unverändert");
+  await p.fill("#sel-actions .ovr input[type=color] >> nth=0", "#ff00ff"); await p.waitForTimeout(800);
+  check((await shape(1,21)).fill === "#FF00FF", "eigene Füllfarbe: " + (await shape(1,21)).fill);
+  await p.evaluate(() => __pp.slides[0].shapes.find(x=>x.id==="20").fill.foregroundColor = "#111111");
+  await p.click("#sync-all"); await p.waitForTimeout(400);
+  check((await shape(1,21)).fill === "#FF00FF", "eigene Farbe übersteht Sync");
+  await p.evaluate(() => __pp.select(0, [2])); await p.waitForTimeout(300);
+  await p.evaluate(() => __pp.select(1, [21])); await p.waitForTimeout(400);
+  await p.click("#sel-actions button:has-text('Alle Anpassungen zurücksetzen')"); await p.waitForTimeout(800);
+  const r = await shape(1,21);
+  check(r.fill === "#111111" && r.text === "Mehr erfahren für Northwind", "Zurücksetzen: " + JSON.stringify(r));
+
+  // ---- Varianten ----
+  await p.evaluate(() => { __pp.slides[0].shapes.push(__pp.mkShape({ id: 22, name: "◆ Karte ◆", fill: "#008000", text: "{{Label}} für {{Kunde}}" })); });
+  await p.evaluate(() => __pp.select(0, [22])); await p.waitForTimeout(400);
+  await p.selectOption("#comp-of", "Karte"); await p.fill("#comp-name", "Grün"); await p.click("#comp-add button"); await p.waitForTimeout(500);
+  check((await shape(0,22)).name === "◆ Karte / Grün ◆", "Variante angelegt: " + (await shape(0,22)).name);
+  check((await p.textContent("#comp-list")).includes("Karte · Grün"), "Variante in Liste");
+  await p.evaluate(() => __pp.select(1, [21])); await p.waitForTimeout(400);
+  await p.fill("#sel-actions .ovr input[type=text]", "Los"); await p.dispatchEvent("#sel-actions .ovr input[type=text]", "change"); await p.waitForTimeout(800);
+  await p.selectOption("#sel-actions select[aria-label=Variante]", "Karte / Grün"); await p.waitForTimeout(900);
+  const v = await shape(1,21);
+  check(v.name === "◆ Karte / Grün ◆" && v.fill === "#008000", "Variante gewechselt: " + JSON.stringify(v));
+  check(v.text === "Los für Northwind", "Anpassung bleibt beim Variantenwechsel: " + v.text);
+
   check(errors.length === 0, "keine JS-Fehler " + errors.join(" | "));
   console.log("Status:", await st());
+  if (process.env.SHOT) { await p.setViewportSize({ width: 340, height: 900 }); await p.evaluate(() => __pp.select(1, [21])); await p.waitForTimeout(400); await p.screenshot({ path: process.env.SHOT }); }
   await b.close();
 })();

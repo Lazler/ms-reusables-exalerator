@@ -88,3 +88,24 @@ test("resolveTemplate: Bearbeitung UND neuer Wert gleichzeitig", () => {
   const neu = [{ name: "Kunde", value: "Fabrikam" }];
   assert.equal(C.resolveTemplate("Neues Angebot für Contoso", "Angebot für {{Kunde}}", "Angebot für Contoso", neu), "Neues Angebot für {{Kunde}}");
 });
+
+test("Varianten-Schlüssel", () => {
+  assert.deepEqual(C.splitKey("Button"), { base: "Button", variant: "Standard" });
+  assert.deepEqual(C.splitKey("Button / Sekundär"), { base: "Button", variant: "Sekundär" });
+  assert.equal(C.joinKey("Button", "Standard"), "Button");
+  assert.equal(C.joinKey("Button", "Rot"), "Button / Rot");
+  assert.equal(C.componentNameOf(C.componentShapeName("Button / Rot") + " 2"), "Button / Rot");
+});
+
+test("Überschreibungen", () => {
+  const o = C.parseOverrides('{"vars":{"Label":"Kaufen"},"fill":"#abc"}');
+  assert.deepEqual(o, { vars: { Label: "Kaufen" }, fill: "#AABBCC", font: null, line: null });
+  assert.deepEqual(C.parseOverrides("kaputt"), { vars: {}, fill: null, font: null, line: null });
+  assert.equal(C.serializeOverrides({ vars: { Label: "" }, fill: null }), null);
+  assert.equal(C.serializeOverrides({ vars: { Label: "X" }, font: "f00" }), '{"vars":{"Label":"X"},"font":"#FF0000"}');
+});
+
+test("mergeVars: Instanz > Master-Standard > global", () => {
+  const m = C.mergeVars([{ name: "Kunde", value: "ACME" }, { name: "Label", value: "g" }], { Label: "Standard" }, { Label: "Instanz", Kunde: "" });
+  assert.deepEqual(m, [{ name: "Kunde", value: "ACME" }, { name: "Label", value: "Instanz" }]);
+});

@@ -9,7 +9,7 @@ Ein PowerPoint-Add-in, das zwei Ideen aus Figma nach PowerPoint bringt:
 
 Alles wird **in der .pptx** gespeichert, ohne Server und ohne Datenbank. Das Add-in besteht nur aus statischen Dateien.
 
-> Status: **Prototyp** (v0.2). Logik und Oberfläche sind gegen eine nachgebaute PowerPoint-API getestet, aber noch nicht in echtem PowerPoint. Siehe [Testplan](#erster-test-in-powerpoint-bitte-in-dieser-reihenfolge).
+> Status: **Prototyp** (v0.3). Logik und Oberfläche sind gegen eine nachgebaute PowerPoint-API getestet, aber noch nicht in echtem PowerPoint. Siehe [Testplan](#erster-test-in-powerpoint-bitte-in-dieser-reihenfolge).
 
 ---
 
@@ -33,8 +33,24 @@ Alles wird **in der .pptx** gespeichert, ohne Server und ohne Datenbank. Das Add
    oder sie markieren und **„Als Instanz verknüpfen“** klicken.
 3. Den Master ändern → **Synchronisieren**. Alternativ **Auto-Sync** einschalten: Dann wird synchronisiert, sobald du den Master abwählst.
 
-Pro Komponente lässt sich festlegen, ob **Text** und **Größe** übernommen werden. Ist *Text übernehmen* aus, behält jede Instanz ihren eigenen Text, ähnlich einem Override in Figma.
+Pro Komponente lässt sich festlegen, ob **Text** und **Größe** übernommen werden.
 Eine markierte Instanz kann **gelöst** werden (Detach) oder **zum Master** werden.
+
+### Instanzen anpassen (wie Overrides in Figma)
+Markierst du eine Instanz, zeigt der Tab *Komponenten* den Bereich **„Anpassungen dieser Instanz“**:
+- **Texte:** Jeder Platzhalter im Master-Text, z. B. `{{Label}}`, bekommt ein eigenes Feld. Trägst du etwas ein, gilt der Wert nur für diese Instanz. Lässt du das Feld leer, gilt der Wert vom Master bzw. der globale Wert.
+  So hat jeder Button denselben Stil, aber einen eigenen Text.
+- **Farben:** Füllung, Schriftfarbe und Linie lassen sich pro Instanz überschreiben. Eigene Farben bleiben beim Synchronisieren erhalten, und *Zurücksetzen* holt wieder die Farbe des Masters.
+- Markierst du den **Master**, setzt du dort die **Standardwerte** (z. B. `Label = Mehr erfahren`), die alle Instanzen ohne eigenen Wert bekommen.
+
+Reihenfolge, welcher Wert gewinnt: **Instanz → Standardwert im Master → globale Variable**.
+
+### Varianten (Komponentenarten)
+Beispiel: Button in *Standard*, *Sekundär* und *Rot*.
+1. Eine Kopie des Masters anlegen und abwandeln (z. B. rot einfärben).
+2. Kopie markieren → bei *Neue Komponente / Variante* **„Variante von Button“** wählen → Name `Rot` → **Anlegen**.
+   Die Form heißt jetzt `◆ Button / Rot ◆` und ist Master dieser Variante.
+3. Eine Instanz markieren → im Dropdown **Variante** umschalten. Sie übernimmt sofort den Stil der Variante. Eigene Texte und Farben bleiben dabei erhalten.
 
 ---
 
@@ -102,4 +118,5 @@ npm run test:e2e  # braucht Playwright + Chromium
 - Liste der Variablen und Komponenten: `Office.context.document.settings` (liegt in der .pptx).
 - Pro Textfeld: unsichtbare Shape-Tags `DC_TPL` (Vorlage mit `{{…}}`) und `DC_OUT` (zuletzt geschriebener Text, um Bearbeitungen zu erkennen).
 - Farbbindungen: Tags `DC_FILL`, `DC_LINE`, `DC_FONT`.
-- Komponenten-Zugehörigkeit: der **Formname** `◆ Name ◆`. Er wandert beim Kopieren mit und ist im Auswahlbereich sichtbar und editierbar. Der Master wird über Folien- und Form-ID identifiziert. Zusätzlich gibt es einen Snapshot seines Stils, falls er gelöscht wird.
+- Anpassungen pro Instanz bzw. Standardwerte im Master: Tag `DC_OVR` (JSON).
+- Komponenten-Zugehörigkeit: der **Formname** `◆ Name ◆` bzw. `◆ Name / Variante ◆`. Er wandert beim Kopieren mit und ist im Auswahlbereich sichtbar und editierbar. Der Master wird über Folien- und Form-ID identifiziert. Zusätzlich gibt es einen Snapshot seines Stils, falls er gelöscht wird.

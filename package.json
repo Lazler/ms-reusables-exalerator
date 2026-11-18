@@ -1,6 +1,6 @@
 {
   "name": "deck-components",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "PowerPoint-Add-in: Variablen und Komponenten wie in Figma",
   "scripts": {

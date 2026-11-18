@@ -81,3 +81,10 @@ footer {
 footer.ok { color: var(--ok); }
 footer.err { color: var(--err); }
 footer.warn { color: var(--warn); }
+.ovr { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; display: grid; gap: 6px; }
+.ovr h3 { font-size: 12px; margin: 0; }
+.ovr .row { margin-top: 0; }
+.field { display: grid; gap: 2px; }
+.field input { width: 100%; }
+.grow { flex: 1; }
+input[type="color"] { width: 36px; height: 28px; padding: 1px; }

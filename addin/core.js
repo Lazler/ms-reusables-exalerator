@@ -160,8 +160,66 @@
     return n ? n : shapeName;
   }
 
+  // ---- Varianten: Schlüssel "Button / Sekundär" ------------------------
+  const VARIANT_SEP = " / ";
+  const DEFAULT_VARIANT = "Standard";
+
+  function splitKey(key) {
+    const i = (key || "").indexOf("/");
+    if (i < 0) return { base: (key || "").trim(), variant: DEFAULT_VARIANT };
+    return { base: key.slice(0, i).trim(), variant: key.slice(i + 1).trim() || DEFAULT_VARIANT };
+  }
+
+  function joinKey(base, variant) {
+    base = base.trim();
+    variant = (variant || "").trim();
+    return !variant || variant === DEFAULT_VARIANT ? base : base + VARIANT_SEP + variant;
+  }
+
+  // ---- Überschreibungen pro Form (Tag DC_OVR, JSON) ----------------------
+  function parseOverrides(raw) {
+    let o = {};
+    try {
+      o = raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      o = {};
+    }
+    return {
+      vars: o && typeof o.vars === "object" && o.vars ? o.vars : {},
+      fill: normalizeColor(o.fill),
+      font: normalizeColor(o.font),
+      line: normalizeColor(o.line),
+    };
+  }
+
+  /** null, wenn nichts überschrieben ist (dann Tag löschen). */
+  function serializeOverrides(o) {
+    const vars = {};
+    for (const [k, v] of Object.entries((o && o.vars) || {})) if (v != null && v !== "") vars[k] = String(v);
+    const out = {};
+    if (Object.keys(vars).length) out.vars = vars;
+    for (const k of ["fill", "font", "line"]) if (o && normalizeColor(o[k])) out[k] = normalizeColor(o[k]);
+    return Object.keys(out).length ? JSON.stringify(out) : null;
+  }
+
+  /** Globale Variablen, überlagert von Objekten {Name: Wert} (spätere gewinnen). */
+  function mergeVars(globalVars, ...layers) {
+    const map = new Map();
+    for (const v of globalVars || []) map.set(v.name, v.value == null ? "" : String(v.value));
+    for (const layer of layers) {
+      for (const [k, v] of Object.entries(layer || {})) if (v != null && v !== "") map.set(k, String(v));
+    }
+    return [...map].map(([name, value]) => ({ name, value }));
+  }
+
   return {
     VAR_RE,
+    DEFAULT_VARIANT,
+    splitKey,
+    joinKey,
+    parseOverrides,
+    serializeOverrides,
+    mergeVars,
     isValidName,
     hasPlaceholders,
     extractNames,

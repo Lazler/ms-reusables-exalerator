@@ -6,7 +6,7 @@ const C = DCCore;
 const STATE_KEY = "deckComponents.v1";
 const TEXT_TYPES = ["GeometricShape", "TextBox", "Placeholder"];
 const COMP_TYPES = ["GeometricShape", "TextBox"];
-const TAG = { TPL: "DC_TPL", OUT: "DC_OUT", FILL: "DC_FILL", LINE: "DC_LINE", FONT: "DC_FONT" };
+const TAG = { TPL: "DC_TPL", OUT: "DC_OUT", FILL: "DC_FILL", LINE: "DC_LINE", FONT: "DC_FONT", OVR: "DC_OVR" };
 
 /** Persistiert in der .pptx (Document Settings). */
 let state = { vars: [], components: {}, showRaw: false };
@@ -175,6 +175,18 @@ const colorOf = (name) => {
   return v ? C.normalizeColor(v.value) : null;
 };
 
+/** Standardwerte, die im Master einer Komponente gesetzt sind. */
+function compDefaults(shapeName) {
+  const key = C.componentNameOf(shapeName);
+  const comp = key && state.components[key];
+  return (comp && comp.snapshot && comp.snapshot.defaults) || {};
+}
+
+/** Global → Master-Standard → eigene Überschreibung der Form. */
+function effectiveVars(shapeName, ovr) {
+  return C.mergeVars(textVars(), compDefaults(shapeName), ovr.vars);
+}
+
 /** Rendert alle Textfelder und Farbbindungen im Deck. */
 async function applyVariables(ctx) {
   const all = await loadShapes(ctx);
@@ -187,12 +199,13 @@ async function applyVariables(ctx) {
     }
   });
 
-  const vars = textVars();
   const missing = new Set();
   let changed = 0;
   let fields = 0;
 
   for (const it of items) {
+    const ovr = C.parseOverrides(tagVal(it.tags[TAG.OVR]));
+    const vars = effectiveVars(it.name, ovr);
     // Text
     if (it.tr) {
       const current = it.tr.text;
@@ -215,14 +228,15 @@ async function applyVariables(ctx) {
       }
     }
     // Farben
-    const fill = colorOf(tagVal(it.tags[TAG.FILL]));
+    // Farben: Instanz-Überschreibung > Farbvariable
+    const fill = ovr.fill || colorOf(tagVal(it.tags[TAG.FILL]));
     if (fill) it.shape.fill.setSolidColor(fill);
-    const line = colorOf(tagVal(it.tags[TAG.LINE]));
+    const line = ovr.line || colorOf(tagVal(it.tags[TAG.LINE]));
     if (line) {
       it.shape.lineFormat.visible = true;
       it.shape.lineFormat.color = line;
     }
-    const font = colorOf(tagVal(it.tags[TAG.FONT]));
+    const font = ovr.font || colorOf(tagVal(it.tags[TAG.FONT]));
     if (font && it.tr) it.tr.font.color = font;
   }
   await ctx.sync();
@@ -248,13 +262,18 @@ function scanPlaceholders() {
       const all = await loadShapes(ctx);
       const items = await loadEach(ctx, all.filter((s) => TEXT_TYPES.includes(s.type)), (it) => {
         it.tpl = loadTag(it.shape, TAG.TPL);
+        it.ovr = loadTag(it.shape, TAG.OVR);
         it.tr = it.shape.textFrame.textRange;
         it.tr.load("text");
       });
       const found = new Set();
       for (const it of items) {
-        C.extractNames(tagVal(it.tpl) || "").forEach((n) => found.add(n));
-        C.extractNames(it.tr.text).forEach((n) => found.add(n));
+        const local = { ...compDefaults(it.name), ...C.parseOverrides(tagVal(it.ovr)).vars };
+        const add = (n) => {
+          if (!(n in local)) found.add(n);
+        };
+        C.extractNames(tagVal(it.tpl) || "").forEach(add);
+        C.extractNames(it.tr.text).forEach(add);
       }
       return [...found];
     });
@@ -350,8 +369,11 @@ async function readStyle(ctx, shape, type) {
     tf.load("verticalAlignment,leftMargin,rightMargin,topMargin,bottomMargin,wordWrap,autoSizeSetting");
     const tpl = loadTag(shape, TAG.TPL);
     const out = loadTag(shape, TAG.OUT);
+    const ovr = loadTag(shape, TAG.OVR);
     await ctx.sync();
-    const source = C.resolveTemplate(tr.text, tagVal(tpl), tagVal(out), textVars()) || tr.text;
+    st.defaults = C.parseOverrides(tagVal(ovr)).vars;
+    const vars = C.mergeVars(textVars(), st.defaults);
+    const source = C.resolveTemplate(tr.text, tagVal(tpl), tagVal(out), vars) || tr.text;
     st.text = {
       source,
       font: {
@@ -378,6 +400,8 @@ const isSet = (v) => v !== null && v !== undefined;
 
 function applyStyle(inst, st, comp) {
   const sh = inst.shape;
+  const ovr = C.parseOverrides(tagVal(inst.ovr));
+  const vars = C.mergeVars(textVars(), st.defaults, ovr.vars);
   if (st.fill) {
     if (st.fill.type === "NoFill") sh.fill.clear();
     else if (st.fill.type === "Solid" && st.fill.color) {
@@ -400,7 +424,7 @@ function applyStyle(inst, st, comp) {
     if (t.autoSize) tf.autoSizeSetting = t.autoSize;
     if (comp.syncText !== false) {
       if (C.hasPlaceholders(t.source)) {
-        const out = state.showRaw ? t.source : C.render(t.source, textVars()).text;
+        const out = state.showRaw ? t.source : C.render(t.source, vars).text;
         inst.tr.text = out;
         sh.tags.add(TAG.TPL, t.source);
         sh.tags.add(TAG.OUT, out);
@@ -425,6 +449,13 @@ function applyStyle(inst, st, comp) {
     }
     if (isSet(t.wordWrap)) tf.wordWrap = t.wordWrap;
   }
+  // Eigene Farben der Instanz gewinnen gegen den Master
+  if (ovr.fill) sh.fill.setSolidColor(ovr.fill);
+  if (ovr.line) {
+    sh.lineFormat.visible = true;
+    sh.lineFormat.color = ovr.line;
+  }
+  if (ovr.font && inst.tr) inst.tr.font.color = ovr.font;
   // Größe zuletzt, damit AutoSize sie nicht direkt wieder überschreibt
   if (comp.syncSize !== false) {
     if (isSet(st.width)) sh.width = st.width;
@@ -468,6 +499,7 @@ async function syncComponents(ctx, names) {
     const loaded = await loadEach(ctx, targets, (it) => {
       it.tpl = loadTag(it.shape, TAG.TPL);
       it.out = loadTag(it.shape, TAG.OUT);
+      it.ovr = loadTag(it.shape, TAG.OVR);
       it.tr = st.text ? it.shape.textFrame.textRange : null;
     });
 
@@ -521,10 +553,24 @@ function refreshCompInfo() {
   });
 }
 
-function createComponent(name) {
-  name = (name || "").trim();
-  if (!C.isValidName(name)) return setStatus("Ungültiger Name. Erlaubt: Buchstaben, Ziffern, Leerzeichen, _ . -", "err");
-  if (state.components[name]) return setStatus(`„${name}“ existiert bereits.`, "err");
+const label = (key) => {
+  const k = C.splitKey(key);
+  return k.variant === C.DEFAULT_VARIANT ? k.base : k.base + " · " + k.variant;
+};
+const variantsOf = (base) => Object.keys(state.components).filter((k) => C.splitKey(k).base === base).sort();
+
+function shapeById(ctx, s) {
+  return ctx.presentation.slides.getItem(s.slideId).shapes.getItem(s.id);
+}
+
+/** key = "Button" (neue Komponente) oder "Button / Sekundär" (Variante). */
+function createComponent(key) {
+  const parts = C.splitKey(key || "");
+  if (!C.isValidName(parts.base) || !C.isValidName(parts.variant)) {
+    return setStatus("Ungültiger Name. Erlaubt: Buchstaben, Ziffern, Leerzeichen, _ . -", "err");
+  }
+  const name = C.joinKey(parts.base, parts.variant);
+  if (state.components[name]) return setStatus(`„${label(name)}“ existiert bereits.`, "err");
   return queue(async () => {
     await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
@@ -534,7 +580,9 @@ function createComponent(name) {
         throw new Error(`Typ „${s.type}“ wird im Prototyp nicht unterstützt. Nur Formen und Textfelder.`);
       }
       const existing = C.componentNameOf(s.name);
-      if (existing && state.components[existing]) throw new Error(`Die Form gehört schon zu „${existing}“.`);
+      if (existing && state.components[existing] && isMasterOf(s)) {
+        throw new Error(`Die Form ist schon Master von „${label(existing)}“.`);
+      }
       s.shape.name = C.componentShapeName(name);
       await ctx.sync();
       const snapshot = await readStyle(ctx, s.shape, s.type);
@@ -544,7 +592,12 @@ function createComponent(name) {
     await saveState();
     $("comp-name").value = "";
     renderComps();
-    setStatus(`Komponente „${name}“ angelegt. Jetzt den Master kopieren und auf anderen Folien einfügen.`, "ok");
+    setStatus(
+      parts.variant === C.DEFAULT_VARIANT
+        ? `Komponente „${name}“ angelegt. Jetzt den Master kopieren und auf anderen Folien einfügen.`
+        : `Variante „${label(name)}“ angelegt. Instanzen können jetzt auf diese Variante umgestellt werden.`,
+      "ok"
+    );
   }).then(() => {
     refreshCompInfo();
     refreshSelection();
@@ -586,6 +639,41 @@ function detachSelection() {
     refreshCompInfo();
     refreshSelection();
   });
+}
+
+/** Ändert die Überschreibungen (Tag DC_OVR) einer Form. */
+function setOverride(s, key, mutate) {
+  return queue(async () => {
+    await PowerPoint.run(async (ctx) => {
+      const sh = shapeById(ctx, s);
+      const t = loadTag(sh, TAG.OVR);
+      await ctx.sync();
+      const o = C.parseOverrides(tagVal(t));
+      mutate(o);
+      const raw = C.serializeOverrides(o);
+      if (raw) sh.tags.add(TAG.OVR, raw);
+      else if (!t.isNullObject) sh.tags.delete(TAG.OVR);
+      await ctx.sync();
+      s.ovr = C.parseOverrides(raw);
+    });
+  })
+    .then(() => runSync([key]))
+    .then(() => runApplyVariables())
+    .then(() => renderSelection());
+}
+
+function switchVariant(s, newKey) {
+  return queue(async () => {
+    await PowerPoint.run(async (ctx) => {
+      shapeById(ctx, s).name = C.componentShapeName(newKey);
+      await ctx.sync();
+    });
+  })
+    .then(() => runSync([newKey]))
+    .then(() => {
+      refreshCompInfo();
+      refreshSelection();
+    });
 }
 
 function makeMaster(name, s) {
@@ -630,7 +718,15 @@ function isMasterOf(s) {
 
 function refreshSelection() {
   return queue(async () => {
-    const sel = await PowerPoint.run(getSelection);
+    const sel = await PowerPoint.run(async (ctx) => {
+      const sel = await getSelection(ctx);
+      if (sel.shapes.length === 1) {
+        const t = loadTag(sel.shapes[0].shape, TAG.OVR);
+        await ctx.sync();
+        sel.shapes[0].ovr = C.parseOverrides(tagVal(t));
+      }
+      return sel;
+    });
     ui.lastSelection = ui.selection;
     ui.selection = sel;
     renderSelection();
@@ -647,7 +743,63 @@ function refreshSelection() {
 }
 
 function compSelect() {
-  return el("select", { "aria-label": "Komponente" }, Object.keys(state.components).map((n) => el("option", { value: n }, n)));
+  return el("select", { "aria-label": "Komponente" }, Object.keys(state.components).sort().map((n) => el("option", { value: n }, label(n))));
+}
+
+/** Bereich „Überschreibungen“ (Instanz) bzw. „Standardwerte“ (Master). */
+function renderOverrides(s, key, isMaster) {
+  const comp = state.components[key];
+  const snap = comp.snapshot || {};
+  const src = (snap.text && snap.text.source) || "";
+  const names = C.extractNames(src);
+  const ovr = s.ovr || C.parseOverrides(null);
+  const defaults = snap.defaults || {};
+  const box = el("div", { class: "ovr" }, el("h3", {}, isMaster ? "Standardwerte der Komponente" : "Anpassungen dieser Instanz"));
+
+  if (!names.length) {
+    box.append(
+      el("p", { class: "hint" }, "Tipp: Schreib z. B. ", el("code", {}, "{{Label}}"), " in den Text des Masters und synchronisiere. Dann lässt sich der Text pro Instanz anpassen.")
+    );
+  }
+  for (const n of names) {
+    const g = state.vars.find((v) => v.name === n && v.type !== "color");
+    const fallback = isMaster ? (g ? g.value : "") : defaults[n] != null ? defaults[n] : g ? g.value : "";
+    const input = el("input", { type: "text", value: ovr.vars[n] || "", placeholder: fallback || "(leer)", "aria-label": n });
+    input.addEventListener("change", () => setOverride(s, key, (o) => (o.vars[n] = input.value)));
+    const src = isMaster ? (g ? "global: " + g.value : "nur in dieser Komponente") : ovr.vars[n] ? "eigener Wert" : defaults[n] != null ? "vom Master" : g ? "global" : "leer";
+    box.append(el("label", { class: "field" }, el("span", { class: "meta" }, "{{" + n + "}} · " + src), input));
+  }
+
+  if (!isMaster) {
+    const masterColor = {
+      fill: snap.fill && snap.fill.color,
+      font: snap.text && snap.text.font && snap.text.font.color,
+      line: snap.line && snap.line.color,
+    };
+    for (const [k, lbl] of [["fill", "Füllung"], ["font", "Schriftfarbe"], ["line", "Linie"]]) {
+      const own = !!ovr[k];
+      const pick = el("input", { type: "color", value: ovr[k] || C.normalizeColor(masterColor[k]) || "#000000", "aria-label": lbl });
+      pick.addEventListener("change", () => setOverride(s, key, (o) => (o[k] = pick.value)));
+      box.append(
+        el(
+          "div",
+          { class: "row" },
+          el("span", { class: "meta grow" }, lbl + (own ? " · eigene Farbe" : " · vom Master")),
+          pick,
+          el("button", { class: "small", disabled: !own, onclick: () => setOverride(s, key, (o) => (o[k] = null)) }, "Zurücksetzen")
+        )
+      );
+    }
+    if (C.serializeOverrides(ovr)) {
+      box.append(
+        el("div", { class: "row" }, el("button", { onclick: () => setOverride(s, key, (o) => {
+          o.vars = {};
+          o.fill = o.font = o.line = null;
+        }) }, "Alle Anpassungen zurücksetzen"))
+      );
+    }
+  }
+  return box;
 }
 
 function renderSelection() {
@@ -673,10 +825,11 @@ function renderSelection() {
   const cname = C.componentNameOf(s.name);
   const comp = cname && state.components[cname];
   if (comp && isMasterOf(s)) {
-    info.replaceChildren(el("b", {}, "Master"), " von „" + cname + "“");
+    info.replaceChildren(el("b", {}, "Master"), " von „" + label(cname) + "“");
     act.append(el("div", { class: "row" }, el("button", { class: "primary", onclick: () => runSync([cname]) }, "Instanzen aktualisieren")));
+    act.append(renderOverrides(s, cname, true));
   } else if (comp) {
-    info.replaceChildren(el("b", {}, "Instanz"), " von „" + cname + "“");
+    info.replaceChildren(el("b", {}, "Instanz"), " von „" + label(cname) + "“");
     act.append(
       el(
         "div",
@@ -686,6 +839,16 @@ function renderSelection() {
         el("button", { onclick: detachSelection }, "Lösen")
       )
     );
+    const variants = variantsOf(C.splitKey(cname).base);
+    if (variants.length > 1) {
+      const vs = el(
+        "select",
+        { "aria-label": "Variante", onchange: () => switchVariant(s, vs.value) },
+        variants.map((k) => el("option", { value: k, selected: k === cname }, C.splitKey(k).variant))
+      );
+      act.append(el("div", { class: "row" }, el("span", { class: "meta" }, "Variante:"), vs));
+    }
+    act.append(renderOverrides(s, cname, false));
   } else if (cname) {
     info.textContent = `„${s.name}“ – Komponente „${cname}“ ist in diesem Deck nicht registriert.`;
     act.append(
@@ -767,8 +930,14 @@ function renderVars() {
 function renderComps() {
   const list = $("comp-list");
   list.replaceChildren();
-  const names = Object.keys(state.components);
+  const names = Object.keys(state.components).sort();
   $("comp-empty").hidden = names.length > 0;
+  // Formular „Neue Komponente / Variante von …“
+  const of = $("comp-of");
+  const prev = of.value;
+  const bases = [...new Set(names.map((k) => C.splitKey(k).base))];
+  of.replaceChildren(el("option", { value: "" }, "Neue Komponente"), ...bases.map((b) => el("option", { value: b }, "Variante von " + b)));
+  of.value = bases.includes(prev) ? prev : "";
   for (const name of names) {
     const comp = state.components[name];
     const info = ui.compInfo[name];
@@ -797,7 +966,7 @@ function renderComps() {
         el(
           "div",
           { class: "head" },
-          el("span", { class: "name" }, "◆ " + name),
+          el("span", { class: "name" }, "◆ " + label(name)),
           info && !info.masterFound ? el("span", { class: "badge warn" }, "Master fehlt") : null
         ),
         el("div", { class: "meta" }, meta),
@@ -889,7 +1058,12 @@ Office.onReady((info) => {
 
   $("comp-add").addEventListener("submit", (e) => {
     e.preventDefault();
-    createComponent($("comp-name").value);
+    const base = $("comp-of").value;
+    const name = $("comp-name").value.trim();
+    createComponent(base ? C.joinKey(base, name) : name);
+  });
+  $("comp-of").addEventListener("change", () => {
+    $("comp-name").placeholder = $("comp-of").value ? "Variante, z. B. Sekundär" : "Name, z. B. Button";
   });
   $("sync-all").addEventListener("click", () => runSync(null));
   $("refresh-comps").addEventListener("click", refreshCompInfo);
