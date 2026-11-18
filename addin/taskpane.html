@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deck Components</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <link rel="stylesheet" href="taskpane.css" />
+</head>
+<body>
+  <header>
+    <h1>Deck Components</h1>
+    <nav role="tablist">
+      <button role="tab" class="tab active" data-tab="vars" aria-selected="true">Variablen</button>
+      <button role="tab" class="tab" data-tab="comps" aria-selected="false">Komponenten</button>
+    </nav>
+  </header>
+
+  <div id="unsupported" class="notice error" hidden>
+    Diese PowerPoint-Version unterstützt die benötigte API (PowerPointApi 1.5) nicht.
+    Bitte PowerPoint im Web oder eine aktuelle Microsoft-365-Version nutzen.
+  </div>
+
+  <!-- ============ VARIABLEN ============ -->
+  <main id="tab-vars" class="panel">
+    <section>
+      <h2>Variablen</h2>
+      <p class="hint">Schreib <code>{{Name}}</code> in ein beliebiges Textfeld. Der Wert wird überall im Deck eingesetzt.</p>
+      <ul id="var-list" class="list"></ul>
+      <p id="var-empty" class="empty">Noch keine Variablen.</p>
+
+      <form id="var-add" class="row">
+        <input id="var-name" placeholder="Name, z. B. Kunde" autocomplete="off" required />
+        <select id="var-type" aria-label="Typ">
+          <option value="text">Text</option>
+          <option value="color">Farbe</option>
+        </select>
+        <button type="submit" class="primary">Hinzufügen</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Ansicht</h2>
+      <label class="check"><input type="checkbox" id="show-raw" /> Platzhalter statt Werte anzeigen (zum Bearbeiten)</label>
+      <div class="row">
+        <button id="apply-vars" class="primary">Deck aktualisieren</button>
+        <button id="scan-vars">Platzhalter im Deck finden</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ KOMPONENTEN ============ -->
+  <main id="tab-comps" class="panel" hidden>
+    <section>
+      <h2>Auswahl</h2>
+      <div id="sel-info" class="sel-info">Nichts ausgewählt.</div>
+      <div id="sel-actions"></div>
+    </section>
+
+    <section>
+      <h2>Neue Komponente</h2>
+      <p class="hint">Markiere genau eine Form oder ein Textfeld. Sie wird zum <b>Master</b>.</p>
+      <form id="comp-add" class="row">
+        <input id="comp-name" placeholder="Name, z. B. Button" autocomplete="off" required />
+        <button type="submit" class="primary">Als Komponente anlegen</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Komponenten</h2>
+      <p class="hint">Instanzen anlegen: Master kopieren (Strg/Cmd + C, V oder D) und auf beliebige Folien einfügen.
+        Alles mit dem Namen <code>◆ Name ◆</code> im Auswahlbereich gilt als Instanz.</p>
+      <ul id="comp-list" class="list"></ul>
+      <p id="comp-empty" class="empty">Noch keine Komponenten.</p>
+      <div class="row">
+        <button id="sync-all" class="primary">Alle synchronisieren</button>
+        <button id="refresh-comps">Neu zählen</button>
+      </div>
+      <label class="check"><input type="checkbox" id="auto-sync" /> Auto-Sync, wenn die Auswahl einen Master verlässt</label>
+    </section>
+  </main>
+
+  <footer id="status" role="status" aria-live="polite"></footer>
+
+  <script src="core.js"></script>
+  <script src="taskpane.js"></script>
+</body>
+</html>

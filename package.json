@@ -1,0 +1,12 @@
+{
+  "name": "deck-components",
+  "version": "0.2.0",
+  "private": true,
+  "description": "PowerPoint-Add-in: Variablen und Komponenten wie in Figma",
+  "scripts": {
+    "test": "node --test tests/core.test.js",
+    "test:e2e": "node tests/e2e/taskpane.e2e.js",
+    "certs": "npx office-addin-dev-certs install",
+    "start": "npx http-server addin -p 3000 -S -C ~/.office-addin-dev-certs/localhost.crt -K ~/.office-addin-dev-certs/localhost.key -c-1"
+  }
+}
