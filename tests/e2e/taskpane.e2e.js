@@ -104,11 +104,29 @@ const root = path.join(__dirname, "..", "..", "addin");
   await pick("#inspector .insp-head .menu-btn", "Make this the master"); await wait(500);
   check((await inspector()).includes("Master component"), "made master");
   check((await inspector()).includes("Push changes to 1 instance"), "push button shows instance count");
-  // auto-sync
-  await pick("#comps-menu-slot .menu-btn", "Auto-push");
+  // automatic update is on by default
+  await p.click("#comps-menu-slot .menu-btn");
+  check((await p.getAttribute('.menu .menu-item:has-text("Update instances automatically")', "aria-checked")) === "true", "auto update on by default");
+  await p.keyboard.press("Escape");
+  // the instance still has the "Primary" fill binding from above; a bound variable
+  // wins over the master (like in Figma), so remove it for this part
+  await p.evaluate(() => __pp.slides[0].shapes[1].tags.delete("DC_FILL"));
+  // change the master (slide 2), click somewhere else -> instance on slide 1 follows
   await p.evaluate(() => (__pp.slides[1].shapes.find((x) => x.id === "9").fill.foregroundColor = "#0000FF"));
-  await select(0, [2]); await wait(700);
-  check(await p.evaluate(() => __pp.slides[0].shapes[1].fill.foregroundColor) === "#0000FF", "auto-sync when leaving the master");
+  await select(0, [2]); await wait(900);
+  check(await p.evaluate(() => __pp.slides[0].shapes[1].fill.foregroundColor) === "#0000FF", "instances follow the master without clicking Push");
+  // the same while PowerPoint cannot report the selection at all
+  await p.evaluate(() => (__pp.slides[1].shapes.find((x) => x.id === "9").fill.foregroundColor = "#00AAAA"));
+  await p.evaluate(() => { window.__selFail = 99; __pp.select(0, [2]); }); await wait(1200);
+  await p.evaluate(() => { window.__selFail = 0; });
+  check(await p.evaluate(() => __pp.slides[0].shapes[1].fill.foregroundColor) === "#00AAAA", "auto update works even when the selection is unreadable");
+  // an unchanged master does not trigger a push
+  await p.evaluate(() => (window.__pushCheck = __pp.slides[0].shapes[1].fill.foregroundColor = "#123123"));
+  await select(0, [2]); await wait(900);
+  check(await p.evaluate(() => __pp.slides[0].shapes[1].fill.foregroundColor) === "#123123", "instance not overwritten when the master did not change");
+  // put it back in line with the master for the next steps
+  await select(1, [9]); await wait(300);
+  await p.click("#push-btn"); await wait(500);
   await select(0, [3]); await wait(400);
   await pick("#inspector .insp-head .menu-btn", "Detach instance"); await wait(400);
   check(await p.evaluate(() => __pp.slides[0].shapes[1].name) === "Button", "instance detached");

@@ -23,6 +23,14 @@ The UI language follows PowerPoint (English, or German for German Office install
 
 The pane has two tabs. The **gear** icon (top right) holds the language and behavior settings; the **⋯** menus hold less frequent actions.
 
+### What updates automatically
+Everything, as soon as you click somewhere else on the slide:
+- **Variable values** you change in the pane → all slides.
+- **Placeholders you type** on a slide (`{{Client}}`) → filled in when you leave the text box.
+- **Master changes** → pushed to all instances (can be turned off in the ⋯ menu of the Components tab).
+
+The text box you are currently typing in is never touched, so your typing is not overwritten. The manual buttons (*Update all slides now*, *Push changes*) are only a fallback.
+
 ### Variables
 1. **Variables** tab → **+ New** → choose *Text* or *Color* → type a name (e.g. `Client`) → **Add**.
 2. Type the value directly in the list.
@@ -47,7 +55,7 @@ The **Components** tab has an *inspector* at the top that always shows what you 
 1. Select a shape → **Create component** → name it (e.g. `Button`).
    The shape is now named `◆ Button ◆` (visible in *Home → Arrange → Selection Pane*).
 2. To create instances, **copy and paste** the master (Ctrl/Cmd + D), on any slide.
-3. Change the master, then click **Push changes**. To push automatically when you deselect the master, turn on **⋯ → Auto-push when leaving a master**.
+3. Change the master and click anywhere else: the instances follow automatically. You can turn this off under **⋯ → Update instances automatically** and push manually with **Push changes** instead.
 
 The list below the inspector shows all components with their instance count. Use the icons to push changes or jump to the master. In **⋯** you can choose whether *text* and *size* are synced, or delete the component.
 

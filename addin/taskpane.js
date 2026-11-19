@@ -5,7 +5,7 @@
 const C = DCCore;
 const I = DCI18n;
 const t = I.t;
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 
 const STATE_KEY = "deckComponents.v1";
 const TEXT_TYPES = ["GeometricShape", "TextBox", "Placeholder"];
@@ -461,6 +461,50 @@ function autoRender(opts) {
     const r = await PowerPoint.run((ctx) => applyVariables(ctx, opts));
     if (r.changed) reportApply(r, false);
   });
+}
+
+/**
+ * Automatic "push": reads the masters on the given slides (all slides if unknown),
+ * compares them with their last snapshot and pushes the ones that changed.
+ * Works without knowing which shape the user just left, so it also works when
+ * PowerPoint on the web cannot report the selection.
+ * @param opts.slideIds  slides whose masters are checked (null = all)
+ * @param opts.skip      masters to leave alone because they are still selected
+ */
+function autoPush(opts) {
+  opts = opts || {};
+  const skip = opts.skip || [];
+  const candidates = Object.keys(state.components).filter((name) => {
+    const m = state.components[name].master;
+    if (opts.slideIds && !opts.slideIds.includes(m.slideId)) return false;
+    return !skip.some((k) => k.slideId === m.slideId && k.id === m.shapeId);
+  });
+  if (!candidates.length) return Promise.resolve();
+  return queue("act.sync", async () => {
+    const r = await PowerPoint.run(async (ctx) => {
+      const all = await loadShapes(ctx, opts.slideIds);
+      const dirty = [];
+      for (const name of candidates) {
+        const comp = state.components[name];
+        const master = all.find((s) => s.slideId === comp.master.slideId && s.id === comp.master.shapeId);
+        if (!master) continue;
+        const st = await readStyle(ctx, master.shape, master.type);
+        if (JSON.stringify(st) !== JSON.stringify(comp.snapshot)) dirty.push(name);
+      }
+      return dirty.length ? syncComponents(ctx, dirty) : null;
+    });
+    if (!r) return;
+    await saveState();
+    renderComps();
+    if (r.warnings.length) setStatus(t("msg.synced", { n: r.synced }) + "\n" + r.warnings.join("\n"), "warn");
+    else if (r.synced) setStatus(t("msg.synced", { n: r.synced }), "ok");
+  });
+}
+
+/** Everything that should happen automatically after the user clicks somewhere. */
+function autoUpdate(slideIds, skip) {
+  if (ui.autoSync) autoPush({ slideIds, skip });
+  return autoRender({ slideIds, skip });
 }
 
 function scanPlaceholders() {
@@ -938,18 +982,15 @@ function refreshSelection() {
     }
     renderInspector();
 
-    // Auto-render placeholders the user just typed, once they leave the text box.
-    // The shapes that are selected now are skipped: the user may still be typing.
+    // Automatic updates after every click: fill in placeholders the user just typed
+    // and push changed masters. The shapes selected now are skipped (the user may
+    // still be typing in them). If the slides are unknown – PowerPoint on the web
+    // sometimes cannot report the selection – the whole deck is checked.
     const prev = ui.lastSelection;
-    const slideIds = [...new Set([prev && prev.slideId, sel.slideId].filter(Boolean))];
-    if (prev && slideIds.length) autoRender({ slideIds, skip: sel.shapes });
-
-    // Auto-sync: the selection has left a master
-    if (ui.autoSync && prev) {
-      const left = prev.shapes.filter((p) => isMasterOf(p) && !sel.shapes.some((s) => s.slideId === p.slideId && s.id === p.id));
-      const names = [...new Set(left.map((p) => C.componentNameOf(p.name)))];
-      if (names.length) runSync(names, true);
-    }
+    const known = [prev && prev.slideId, sel.slideId].filter(Boolean);
+    const unsure = (x) => !x || x.unreadable || x.partial;
+    const slideIds = known.length && !unsure(sel) && !unsure(prev) ? [...new Set(known)] : null;
+    autoUpdate(slideIds, sel.shapes);
   });
 }
 
@@ -1506,7 +1547,7 @@ Office.onReady((info) => {
   }
   if (!Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) $("unsupported").hidden = false;
   loadState();
-  ui.autoSync = lsGet("dc.autoSync") === "1";
+  ui.autoSync = lsGet("dc.autoSync") !== "0"; // on unless the user turned it off
 
   document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
   $("var-new").addEventListener("click", startAddVar);
@@ -1522,6 +1563,6 @@ Office.onReady((info) => {
   // Fill in anything typed while the pane was closed (not the shape being edited)
   PowerPoint.run(getSelection)
     .catch(() => ({ shapes: [] }))
-    .then((sel) => autoRender({ skip: sel.shapes }))
+    .then((sel) => autoUpdate(null, sel.shapes))
     .then(() => refreshSelection());
 });
