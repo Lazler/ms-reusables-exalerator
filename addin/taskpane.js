@@ -5,7 +5,8 @@
 const C = DCCore;
 const I = DCI18n;
 const t = I.t;
-const VERSION = "0.4.1";
+const VERSION = "0.5.0";
+
 const STATE_KEY = "deckComponents.v1";
 const TEXT_TYPES = ["GeometricShape", "TextBox", "Placeholder"];
 const COMP_TYPES = ["GeometricShape", "TextBox"];
@@ -14,9 +15,18 @@ const TAG = { TPL: "DC_TPL", OUT: "DC_OUT", FILL: "DC_FILL", LINE: "DC_LINE", FO
 /** Persisted inside the .pptx (document settings). */
 let state = { vars: [], components: {}, showRaw: false };
 /** Runtime only. */
-const ui = { compInfo: {}, selection: null, lastSelection: null, pendingDelete: null };
+const ui = {
+  compInfo: {},
+  selection: null,
+  lastSelection: null,
+  autoSync: false,
+  addingVar: false, // inline "new variable" row open
+  inspectorForm: null, // null | "create" | "variant"
+  inspectorFor: null, // selection signature the inline form belongs to
+  confirmDelete: null,
+};
 
-// ---------------------------------------------------------------- helpers
+// ================================================================ helpers
 
 const $ = (id) => document.getElementById(id);
 
@@ -25,18 +35,13 @@ function el(tag, attrs, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === "class") n.className = v;
+    else if (k === "html") n.innerHTML = v; // only used with static icon SVG
     else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
     else if (k in n && k !== "list") n[k] = v;
     else n.setAttribute(k, v === true ? "" : v);
   }
   for (const c of children.flat()) if (c != null && c !== false) n.append(c.nodeType ? c : String(c));
   return n;
-}
-
-function setStatus(msg, kind) {
-  const f = $("status");
-  f.textContent = msg || "";
-  f.className = kind || "";
 }
 
 /** Renders text and shows {{…}} and ◆ … ◆ as inline code. */
@@ -48,6 +53,109 @@ function rich(text) {
   return frag;
 }
 
+// Small inline icon set (16×16, stroke = currentColor)
+const ICONS = {
+  plus: '<path d="M8 3v10M3 8h10"/>',
+  more: '<circle cx="3.5" cy="8" r="1.1" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1.1" fill="currentColor" stroke="none"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor" stroke="none"/>',
+  gear: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/>',
+  insert: '<path d="M3 4h7M3 8h4M3 12h7"/><path d="M10.5 6.5 13 8l-2.5 1.5"/>',
+  paint: '<path d="M3 10.5 8.5 5l2.5 2.5L5.5 13H3z"/><path d="M9.5 4l1-1 2.5 2.5-1 1"/>',
+  sync: '<path d="M12.5 6A4.7 4.7 0 0 0 4 5.2M3.5 10A4.7 4.7 0 0 0 12 10.8"/><path d="M4 2.5v2.8h2.8M12 13.5v-2.8H9.2"/>',
+  diamond: '<path d="M8 1.8 14.2 8 8 14.2 1.8 8z"/>',
+  diamondOpen: '<path d="M8 2.5 13.5 8 8 13.5 2.5 8z"/><path d="M8 5.5 10.5 8 8 10.5 5.5 8z"/>',
+  text: '<path d="M3.5 4h9M8 4v8.5"/>',
+  close: '<path d="M4 4l8 8M12 4l-8 8"/>',
+  target: '<circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="1.5"/>',
+  cursor: '<path d="M4 2.5 12 8l-3.6.8L10.5 13l-1.7.8-2.1-4.3L4 12z"/>',
+  check: '<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>',
+};
+function icon(name) {
+  return el("span", {
+    class: "ico",
+    "aria-hidden": "true",
+    html: '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + ICONS[name] + "</svg>",
+  });
+}
+
+function iconButton(name, title, onclick, extra) {
+  return el("button", Object.assign({ type: "button", class: "icon-btn", title, "aria-label": title, onclick }, extra || {}), icon(name));
+}
+
+// ---------------------------------------------------------------- popover menu
+
+let openMenu = null;
+function closeMenu() {
+  if (openMenu) openMenu.remove();
+  openMenu = null;
+}
+document.addEventListener("click", (e) => {
+  if (openMenu && !openMenu.contains(e.target)) closeMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMenu();
+});
+
+/**
+ * A "⋯" (or other icon) button that opens a small menu.
+ * items: { label, onclick, danger, checked, keepOpen } | "sep" | { heading }
+ */
+function menuButton(items, opts) {
+  opts = opts || {};
+  const btn = iconButton(opts.icon || "more", opts.title || t("ui.more"), (e) => {
+    e.stopPropagation();
+    if (openMenu && openMenu._owner === btn) return closeMenu();
+    closeMenu();
+    const m = el("div", { class: "menu", role: "menu" });
+    m._owner = btn;
+    for (const it of typeof items === "function" ? items() : items) {
+      if (!it) continue;
+      if (it === "sep") m.append(el("div", { class: "menu-sep" }));
+      else if (it.heading) m.append(el("div", { class: "menu-heading" }, it.heading));
+      else {
+        m.append(
+          el(
+            "button",
+            {
+              type: "button",
+              role: it.checked === undefined ? "menuitem" : "menuitemcheckbox",
+              "aria-checked": it.checked === undefined ? null : String(!!it.checked),
+              class: "menu-item" + (it.danger ? " danger" : ""),
+              disabled: it.disabled,
+              onclick: (ev) => {
+                ev.stopPropagation();
+                if (!it.keepOpen) closeMenu();
+                it.onclick();
+              },
+            },
+            el("span", { class: "menu-check" }, it.checked ? icon("check") : null),
+            el("span", {}, it.label)
+          )
+        );
+      }
+    }
+    document.body.append(m);
+    const r = btn.getBoundingClientRect();
+    const w = m.offsetWidth;
+    m.style.top = Math.min(r.bottom + 4, window.innerHeight - m.offsetHeight - 8) + "px";
+    m.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + "px";
+    openMenu = m;
+  });
+  btn.classList.add("menu-btn");
+  return btn;
+}
+
+// ---------------------------------------------------------------- toast / status
+
+let toastTimer = null;
+/** kind: undefined (info) | "ok" | "warn" | "err". Info/ok hide by themselves. */
+function setStatus(msg, kind) {
+  const f = $("status");
+  clearTimeout(toastTimer);
+  $("status-text").textContent = msg || "";
+  f.className = "toast " + (kind || "info") + (msg ? " show" : "");
+  if (!kind || kind === "ok") toastTimer = setTimeout(() => f.classList.remove("show"), 3500);
+}
+
 function errText(e) {
   if (!e) return t("err.unknown");
   let s = e.message || String(e);
@@ -57,23 +165,19 @@ function errText(e) {
 }
 
 function debounce(fn, ms) {
-  let t;
+  let tm;
   return (...a) => {
-    clearTimeout(t);
-    t = setTimeout(() => fn(...a), ms);
+    clearTimeout(tm);
+    tm = setTimeout(() => fn(...a), ms);
   };
 }
 
-/** Runs all PowerPoint calls one after another and reports errors in the status bar. */
+/** Runs all PowerPoint calls one after another and reports errors. */
 let chain = Promise.resolve();
 function queue(label, fn) {
-  if (typeof label === "function") {
-    fn = label;
-    label = null;
-  }
   const p = chain.then(fn).catch((e) => {
     console.error(label, e);
-    setStatus((label ? t("err.during", { action: t(label) }) : t("err.prefix")) + ": " + errText(e), "err");
+    setStatus(t("err.during", { action: t(label) }) + ": " + errText(e), "err");
   });
   chain = p;
   return p;
@@ -82,6 +186,7 @@ function queue(label, fn) {
 function saveState() {
   const s = Office.context.document.settings;
   s.set(STATE_KEY, JSON.stringify(state));
+  updateCounts();
   return new Promise((resolve) =>
     s.saveAsync((r) => {
       if (r.status !== Office.AsyncResultStatus.Succeeded) {
@@ -119,9 +224,9 @@ function lsSet(k, v) {
   }
 }
 
-// ---------------------------------------------------------------- PowerPoint access
+// ================================================================ PowerPoint access
 
-/** Loads all shapes on all slides (group contents excluded). */
+/** Loads all shapes on the given slides (default: all), group contents excluded. */
 async function loadShapes(ctx, slideIds) {
   const slides = ctx.presentation.slides;
   slides.load("items/id");
@@ -141,11 +246,11 @@ async function loadShapes(ctx, slideIds) {
 }
 
 function loadTag(shape, key) {
-  const t = shape.tags.getItemOrNullObject(key);
-  t.load("value");
-  return t;
+  const tg = shape.tags.getItemOrNullObject(key);
+  tg.load("value");
+  return tg;
 }
-const tagVal = (t) => (t && !t.isNullObject ? t.value : null);
+const tagVal = (tg) => (tg && !tg.isNullObject ? tg.value : null);
 
 /**
  * Loads data for many items in one batch. If that fails (e.g. an exotic shape has
@@ -229,7 +334,11 @@ async function getSelection(ctx) {
   return { slideId, shapes: list, partial: true };
 }
 
-// ---------------------------------------------------------------- variables
+function shapeById(ctx, s) {
+  return ctx.presentation.slides.getItem(s.slideId).shapes.getItem(s.id);
+}
+
+// ================================================================ variables
 
 const textVars = () => state.vars.filter((v) => v.type !== "color");
 const colorOf = (name) => {
@@ -244,13 +353,28 @@ function compDefaults(shapeName) {
   return (comp && comp.snapshot && comp.snapshot.defaults) || {};
 }
 
+/** Placeholders in a component's master text – they belong to the component, not to the deck. */
+function componentPlaceholders(shapeName) {
+  const key = C.componentNameOf(shapeName);
+  const comp = key && state.components[key];
+  const src = comp && comp.snapshot && comp.snapshot.text && comp.snapshot.text.source;
+  return src ? C.extractNames(src) : [];
+}
+
+/** Friendly name for a PowerPoint shape type. */
+function typeLabel(type) {
+  const k = "shape." + type;
+  const s = t(k);
+  return s === k ? type : s;
+}
+
 /** Global → master default → the shape's own override. */
 function effectiveVars(shapeName, ovr) {
   return C.mergeVars(textVars(), compDefaults(shapeName), ovr.vars);
 }
 
-/** Renders all text boxes and color bindings in the deck. */
 /**
+ * Renders text boxes and color bindings.
  * @param opts.slideIds  only these slides (default: whole deck)
  * @param opts.skip      shapes to leave alone, e.g. the one the user is typing in
  */
@@ -276,7 +400,7 @@ async function applyVariables(ctx, opts) {
   for (const it of items) {
     const ovr = C.parseOverrides(tagVal(it.tags[TAG.OVR]));
     const vars = effectiveVars(it.name, ovr);
-    // Text
+    const local = componentPlaceholders(it.name);
     if (it.tr) {
       const current = it.tr.text;
       const oldTpl = tagVal(it.tags[TAG.TPL]);
@@ -284,7 +408,7 @@ async function applyVariables(ctx, opts) {
       if (tpl) {
         fields++;
         const r = C.render(tpl, vars);
-        r.missing.forEach((m) => missing.add(m));
+        r.missing.filter((m) => !local.includes(m)).forEach((m) => missing.add(m));
         const out = state.showRaw ? tpl : r.text;
         if (!C.sameText(out, current)) {
           it.tr.text = out;
@@ -312,35 +436,30 @@ async function applyVariables(ctx, opts) {
   return { changed, fields, missing: [...missing] };
 }
 
+function reportApply(r, always) {
+  if (r.missing.length) {
+    setStatus(t("msg.missing", { names: r.missing.join(", ") }), "warn");
+  } else if (always || r.changed) {
+    setStatus(t("msg.applied", { fields: r.fields, changed: r.changed }) + (state.showRaw ? " " + t("msg.rawView") : ""), "ok");
+  }
+}
+
 function runApplyVariables() {
   return queue("act.apply", async () => {
-    setStatus(t("msg.updating"));
     const r = await PowerPoint.run(applyVariables);
-    let msg = t("msg.applied", { fields: r.fields, changed: r.changed });
-    if (state.showRaw) msg += " " + t("msg.rawView");
-    if (r.missing.length) {
-      setStatus(msg + "\n" + t("msg.missing", { names: r.missing.join(", ") }), "warn");
-    } else setStatus(msg, "ok");
+    reportApply(r, true);
   });
 }
-const applyVariablesSoon = debounce(runApplyVariables, 700);
+const applyVariablesSoon = debounce(() => queue("act.apply", async () => reportApply(await PowerPoint.run(applyVariables), false)), 600);
 
-/** Nothing to render when there are no variables, bindings or component defaults. */
 const hasRenderables = () => state.vars.length > 0 || Object.keys(state.components).length > 0;
 
-/**
- * Quiet re-render: used when the user leaves a text box and when the pane opens.
- * Only reports something if text actually changed or a placeholder is unknown.
- */
+/** Quiet re-render when the user leaves a text box and when the pane opens. */
 function autoRender(opts) {
   if (!hasRenderables()) return Promise.resolve();
   return queue("act.apply", async () => {
     const r = await PowerPoint.run((ctx) => applyVariables(ctx, opts));
-    if (r.changed) {
-      const msg = t("msg.applied", { fields: r.fields, changed: r.changed });
-      if (r.missing.length) setStatus(msg + "\n" + t("msg.missing", { names: r.missing.join(", ") }), "warn");
-      else setStatus(msg, "ok");
-    }
+    if (r.changed) reportApply(r, false);
   });
 }
 
@@ -388,7 +507,7 @@ function insertPlaceholder(name) {
       await ctx.sync();
     });
     setStatus(t("msg.inserted", { name }), "ok");
-  }).then(() => runApplyVariables());
+  });
 }
 
 function bindColor(name, kind) {
@@ -414,8 +533,8 @@ function unbindColors() {
       });
       let c = 0;
       items.forEach((it) =>
-        it.t.forEach(([k, t]) => {
-          if (!t.isNullObject) {
+        it.t.forEach(([k, tg]) => {
+          if (!tg.isNullObject) {
             it.shape.tags.delete(k);
             c++;
           }
@@ -428,7 +547,7 @@ function unbindColors() {
   });
 }
 
-// ---------------------------------------------------------------- components
+// ================================================================ components
 
 async function readStyle(ctx, shape, type) {
   shape.load("width,height");
@@ -506,36 +625,36 @@ function applyStyle(inst, st, comp) {
       if (st.line.dashStyle) sh.lineFormat.dashStyle = st.line.dashStyle;
     }
   }
-  const t = st.text;
-  if (t && inst.tr) {
+  const tx = st.text;
+  if (tx && inst.tr) {
     const tf = sh.textFrame;
-    if (t.autoSize) tf.autoSizeSetting = t.autoSize;
+    if (tx.autoSize) tf.autoSizeSetting = tx.autoSize;
     if (comp.syncText !== false) {
-      if (C.hasPlaceholders(t.source)) {
-        const out = state.showRaw ? t.source : C.render(t.source, vars).text;
+      if (C.hasPlaceholders(tx.source)) {
+        const out = state.showRaw ? tx.source : C.render(tx.source, vars).text;
         inst.tr.text = out;
-        sh.tags.add(TAG.TPL, t.source);
+        sh.tags.add(TAG.TPL, tx.source);
         sh.tags.add(TAG.OUT, out);
       } else {
-        inst.tr.text = t.source;
+        inst.tr.text = tx.source;
         if (!inst.tpl.isNullObject) sh.tags.delete(TAG.TPL);
         if (!inst.out.isNullObject) sh.tags.delete(TAG.OUT);
       }
     }
-    const f = t.font || {};
+    const f = tx.font || {};
     for (const k of ["name", "size", "bold", "italic", "underline", "color"]) {
       if (isSet(f[k]) && f[k] !== "") inst.tr.font[k] = f[k];
     }
-    if (t.hAlign) inst.tr.paragraphFormat.horizontalAlignment = t.hAlign;
-    if (t.vAlign) tf.verticalAlignment = t.vAlign;
-    if (t.margins) {
-      const [l, r, tp, b] = t.margins;
+    if (tx.hAlign) inst.tr.paragraphFormat.horizontalAlignment = tx.hAlign;
+    if (tx.vAlign) tf.verticalAlignment = tx.vAlign;
+    if (tx.margins) {
+      const [l, r, tp, b] = tx.margins;
       if (isSet(l)) tf.leftMargin = l;
       if (isSet(r)) tf.rightMargin = r;
       if (isSet(tp)) tf.topMargin = tp;
       if (isSet(b)) tf.bottomMargin = b;
     }
-    if (isSet(t.wordWrap)) tf.wordWrap = t.wordWrap;
+    if (isSet(tx.wordWrap)) tf.wordWrap = tx.wordWrap;
   }
   // The instance's own colors win over the master
   if (ovr.fill) sh.fill.setSolidColor(ovr.fill);
@@ -551,6 +670,17 @@ function applyStyle(inst, st, comp) {
   }
 }
 
+function infoFor(all, name, comp) {
+  const members = all.filter((s) => C.componentNameOf(s.name) === name);
+  const master = members.find((s) => s.slideId === comp.master.slideId && s.id === comp.master.shapeId);
+  return {
+    members,
+    master,
+    instances: members.filter((s) => s !== master),
+    info: { instances: members.length - (master ? 1 : 0), masterFound: !!master, masterSlide: master ? master.slideIndex + 1 : null },
+  };
+}
+
 /** Syncs the given (or all) components. Returns statistics. */
 async function syncComponents(ctx, names) {
   const all = await loadShapes(ctx);
@@ -558,14 +688,8 @@ async function syncComponents(ctx, names) {
   ui.compInfo = {};
   for (const name of Object.keys(state.components)) {
     const comp = state.components[name];
-    const members = all.filter((s) => C.componentNameOf(s.name) === name);
-    const master = members.find((s) => s.slideId === comp.master.slideId && s.id === comp.master.shapeId);
-    const instances = members.filter((s) => s !== master);
-    ui.compInfo[name] = {
-      instances: instances.length,
-      masterFound: !!master,
-      masterSlide: master ? master.slideIndex + 1 : null,
-    };
+    const { master, instances, info } = infoFor(all, name, comp);
+    ui.compInfo[name] = info;
     if (names && !names.includes(name)) continue;
 
     let st;
@@ -611,14 +735,13 @@ async function syncComponents(ctx, names) {
   return result;
 }
 
-function runSync(names) {
+function runSync(names, quiet) {
   return queue("act.sync", async () => {
-    setStatus(t("msg.syncing"));
     const r = await PowerPoint.run((ctx) => syncComponents(ctx, names));
     await saveState();
     renderComps();
-    const msg = t("msg.synced", { n: r.synced });
-    setStatus(r.warnings.length ? msg + "\n" + r.warnings.join("\n") : msg, r.warnings.length ? "warn" : "ok");
+    if (r.warnings.length) setStatus(t("msg.synced", { n: r.synced }) + "\n" + r.warnings.join("\n"), "warn");
+    else if (!quiet) setStatus(t("msg.synced", { n: r.synced }), "ok");
   });
 }
 
@@ -627,15 +750,7 @@ function refreshCompInfo() {
     await PowerPoint.run(async (ctx) => {
       const all = await loadShapes(ctx);
       ui.compInfo = {};
-      for (const [name, comp] of Object.entries(state.components)) {
-        const members = all.filter((s) => C.componentNameOf(s.name) === name);
-        const master = members.find((s) => s.slideId === comp.master.slideId && s.id === comp.master.shapeId);
-        ui.compInfo[name] = {
-          instances: members.length - (master ? 1 : 0),
-          masterFound: !!master,
-          masterSlide: master ? master.slideIndex + 1 : null,
-        };
-      }
+      for (const [name, comp] of Object.entries(state.components)) ui.compInfo[name] = infoFor(all, name, comp).info;
     });
     renderComps();
   });
@@ -652,16 +767,10 @@ const variantLabel = (key) => {
 };
 const variantsOf = (base) => Object.keys(state.components).filter((k) => C.splitKey(k).base === base).sort();
 
-function shapeById(ctx, s) {
-  return ctx.presentation.slides.getItem(s.slideId).shapes.getItem(s.id);
-}
-
 /** key = "Button" (new component) or "Button / Secondary" (variant). */
 function createComponent(key) {
   const parts = C.splitKey(key || "");
-  if (!C.isValidName(parts.base) || !C.isValidName(parts.variant)) {
-    return setStatus(t("err.invalidName"), "err");
-  }
+  if (!C.isValidName(parts.base) || !C.isValidName(parts.variant)) return setStatus(t("err.invalidName"), "err");
   const name = C.joinKey(parts.base, parts.variant);
   if (state.components[name]) return setStatus(t("err.exists", { name: label(name) }), "err");
   return queue("act.create", async () => {
@@ -669,9 +778,7 @@ function createComponent(key) {
       const sel = await getSelection(ctx);
       if (sel.shapes.length !== 1) throw new Error(t("err.exactlyOne"));
       const s = sel.shapes[0];
-      if (!COMP_TYPES.includes(s.type)) {
-        throw new Error(t("err.typeUnsupported", { type: s.type }));
-      }
+      if (!COMP_TYPES.includes(s.type)) throw new Error(t("err.typeUnsupported", { type: typeLabel(s.type) }));
       const existing = C.componentNameOf(s.name);
       if (existing && state.components[existing] && isMasterOf(s)) {
         throw new Error(t("err.alreadyMaster", { name: label(existing) }));
@@ -682,15 +789,10 @@ function createComponent(key) {
       state.components[name] = { master: { slideId: sel.slideId, shapeId: s.id }, snapshot, syncText: true, syncSize: true };
       ui.compInfo[name] = { instances: 0, masterFound: true, masterSlide: null };
     });
+    ui.inspectorForm = null;
     await saveState();
-    $("comp-name").value = "";
     renderComps();
-    setStatus(
-      parts.variant === C.DEFAULT_VARIANT
-        ? t("msg.compCreated", { name })
-        : t("msg.variantCreated", { name: label(name) }),
-      "ok"
-    );
+    setStatus(parts.variant === C.DEFAULT_VARIANT ? t("msg.compCreated", { name }) : t("msg.variantCreated", { name: label(name) }), "ok");
   }).then(() => {
     refreshCompInfo();
     refreshSelection();
@@ -702,16 +804,14 @@ function linkSelection(name) {
     const n = await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       const comp = state.components[name];
-      const targets = sel.shapes.filter(
-        (s) => !(s.slideId === comp.master.slideId && s.id === comp.master.shapeId)
-      );
+      const targets = sel.shapes.filter((s) => !(s.slideId === comp.master.slideId && s.id === comp.master.shapeId));
       if (!targets.length) throw new Error(t("err.selectTargets"));
       targets.forEach((s) => (s.shape.name = C.componentShapeName(name)));
       await ctx.sync();
       return targets.length;
     });
     setStatus(t("msg.linked", { n, name: label(name) }), "ok");
-  }).then(() => runSync([name]).then(refreshSelection));
+  }).then(() => runSync([name], true).then(refreshSelection));
 }
 
 function detachSelection() {
@@ -719,10 +819,7 @@ function detachSelection() {
     await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       sel.shapes.forEach((s) => {
-        const comp = state.components[C.componentNameOf(s.name)];
-        if (comp && comp.master.slideId === s.slideId && comp.master.shapeId === s.id) {
-          throw new Error(t("err.detachMaster"));
-        }
+        if (isMasterOf(s)) throw new Error(t("err.detachMaster"));
       });
       sel.shapes.forEach((s) => (s.shape.name = C.stripComponentName(s.name)));
       await ctx.sync();
@@ -739,20 +836,20 @@ function setOverride(s, key, mutate) {
   return queue("act.override", async () => {
     await PowerPoint.run(async (ctx) => {
       const sh = shapeById(ctx, s);
-      const t = loadTag(sh, TAG.OVR);
+      const tg = loadTag(sh, TAG.OVR);
       await ctx.sync();
-      const o = C.parseOverrides(tagVal(t));
+      const o = C.parseOverrides(tagVal(tg));
       mutate(o);
       const raw = C.serializeOverrides(o);
       if (raw) sh.tags.add(TAG.OVR, raw);
-      else if (!t.isNullObject) sh.tags.delete(TAG.OVR);
+      else if (!tg.isNullObject) sh.tags.delete(TAG.OVR);
       await ctx.sync();
       s.ovr = C.parseOverrides(raw);
     });
   })
-    .then(() => runSync([key]))
-    .then(() => runApplyVariables())
-    .then(() => renderSelection());
+    .then(() => runSync([key], true))
+    .then(() => applyVariablesSoon())
+    .then(() => renderInspector());
 }
 
 function switchVariant(s, newKey) {
@@ -762,7 +859,7 @@ function switchVariant(s, newKey) {
       await ctx.sync();
     });
   })
-    .then(() => runSync([newKey]))
+    .then(() => runSync([newKey], true))
     .then(() => {
       refreshCompInfo();
       refreshSelection();
@@ -801,13 +898,15 @@ function showMaster(name) {
   });
 }
 
-// ---------------------------------------------------------------- selection
+// ================================================================ selection
 
 function isMasterOf(s) {
   const name = C.componentNameOf(s.name);
   const comp = name && state.components[name];
   return !!comp && comp.master.slideId === s.slideId && comp.master.shapeId === s.id;
 }
+
+const selSignature = (sel) => (sel ? sel.shapes.map((s) => s.slideId + ":" + s.id).join(",") : "");
 
 function refreshSelection() {
   return queue("act.selection", async () => {
@@ -817,9 +916,9 @@ function refreshSelection() {
         const sel = await getSelection(ctx);
         if (sel.shapes.length === 1) {
           try {
-            const t = loadTag(sel.shapes[0].shape, TAG.OVR);
+            const tg = loadTag(sel.shapes[0].shape, TAG.OVR);
             await ctx.sync();
-            sel.shapes[0].ovr = C.parseOverrides(tagVal(t));
+            sel.shapes[0].ovr = C.parseOverrides(tagVal(tg));
           } catch (_) {
             sel.shapes[0].ovr = C.parseOverrides(null);
           }
@@ -833,50 +932,241 @@ function refreshSelection() {
     }
     ui.lastSelection = ui.selection;
     ui.selection = sel;
-    renderSelection();
+    if (selSignature(sel) !== ui.inspectorFor) {
+      ui.inspectorForm = null;
+      ui.inspectorFor = selSignature(sel);
+    }
+    renderInspector();
 
-    // Auto-render: fill in placeholders the user just typed, once they leave the
-    // text box. The shapes that are selected now are skipped, because the user may
-    // still be typing in them and PowerPoint would overwrite our change.
+    // Auto-render placeholders the user just typed, once they leave the text box.
+    // The shapes that are selected now are skipped: the user may still be typing.
     const prev = ui.lastSelection;
     const slideIds = [...new Set([prev && prev.slideId, sel.slideId].filter(Boolean))];
     if (prev && slideIds.length) autoRender({ slideIds, skip: sel.shapes });
 
     // Auto-sync: the selection has left a master
-    if ($("auto-sync").checked && ui.lastSelection) {
-      const left = ui.lastSelection.shapes.filter(
-        (p) => isMasterOf(p) && !sel.shapes.some((s) => s.slideId === p.slideId && s.id === p.id)
-      );
+    if (ui.autoSync && prev) {
+      const left = prev.shapes.filter((p) => isMasterOf(p) && !sel.shapes.some((s) => s.slideId === p.slideId && s.id === p.id));
       const names = [...new Set(left.map((p) => C.componentNameOf(p.name)))];
-      if (names.length) runSync(names);
+      if (names.length) runSync(names, true);
     }
   });
 }
 
-function compSelect() {
-  return el("select", { "aria-label": t("comp.select") }, Object.keys(state.components).sort().map((n) => el("option", { value: n }, label(n))));
+// ================================================================ rendering: variables
+
+function updateCounts() {
+  $("count-vars").textContent = state.vars.length || "";
+  $("count-comps").textContent = Object.keys(state.components).length || "";
 }
 
-/** "Overrides" box (instance) or "Defaults" box (master). */
-function renderOverrides(s, key, isMaster) {
+function renderVars() {
+  const list = $("var-list");
+  list.replaceChildren();
+  updateCounts();
+
+  if (ui.addingVar) list.append(renderAddVarRow());
+  $("var-empty").hidden = state.vars.length > 0 || ui.addingVar;
+  $("vars-footnote").hidden = state.vars.length === 0;
+
+  state.vars.forEach((v, idx) => {
+    const remove = () => {
+      state.vars.splice(idx, 1);
+      saveState();
+      renderVars();
+      runApplyVariables();
+    };
+    let lead, value, action;
+    if (v.type === "color") {
+      const hex = el("input", { type: "text", class: "cell-input mono", value: v.value || "", placeholder: "#RRGGBB", "aria-label": t("vars.hex") });
+      const pick = el("input", { type: "color", value: C.normalizeColor(v.value) || "#000000", "aria-label": t("vars.pick") });
+      const commit = (val) => {
+        const c = C.normalizeColor(val);
+        if (!c) return setStatus(t("err.invalidColor", { value: val }), "err");
+        v.value = c;
+        hex.value = c;
+        pick.value = c;
+        sw.style.background = c;
+        saveState();
+        applyVariablesSoon();
+      };
+      pick.addEventListener("input", () => commit(pick.value));
+      hex.addEventListener("change", () => commit(hex.value));
+      const sw = el("label", { class: "swatch", title: t("vars.pick") }, pick);
+      sw.style.background = C.normalizeColor(v.value) || "#000000";
+      lead = sw;
+      value = hex;
+      action = menuButton(
+        [
+          { heading: t("vars.applyTo") },
+          { label: t("vars.bind.fill"), onclick: () => bindColor(v.name, "fill") },
+          { label: t("vars.bind.line"), onclick: () => bindColor(v.name, "line") },
+          { label: t("vars.bind.font"), onclick: () => bindColor(v.name, "font") },
+          "sep",
+          { label: t("vars.unbind"), onclick: unbindColors },
+        ],
+        { icon: "paint", title: t("vars.applyTo") }
+      );
+    } else {
+      lead = el("span", { class: "type-glyph", title: t("vars.type.text") }, icon("text"));
+      value = el("input", { type: "text", class: "cell-input", value: v.value || "", placeholder: t("vars.valuePh"), "aria-label": t("vars.valueOf", { name: v.name }) });
+      value.addEventListener("input", () => {
+        v.value = value.value;
+        saveState();
+        applyVariablesSoon();
+      });
+      action = iconButton("insert", t("vars.insertTip", { name: v.name }), () => insertPlaceholder(v.name), { class: "icon-btn insert-btn" });
+    }
+    const more = menuButton([
+      v.type !== "color" ? { label: t("vars.insert", { name: v.name }), onclick: () => insertPlaceholder(v.name) } : null,
+      { label: t("vars.delete"), danger: true, onclick: remove },
+    ]);
+    list.append(
+      el(
+        "li",
+        { class: "row var-row", "data-name": v.name },
+        lead,
+        el("span", { class: "var-name mono", title: "{{" + v.name + "}}" }, v.name),
+        value,
+        el("span", { class: "row-actions" }, action, more)
+      )
+    );
+  });
+}
+
+function renderAddVarRow() {
+  let type = "text";
+  const name = el("input", { id: "var-name", class: "cell-input", placeholder: t("vars.namePh"), autocomplete: "off", "aria-label": t("vars.name") });
+  const seg = el(
+    "div",
+    { class: "seg", role: "group", "aria-label": t("vars.type") },
+    ...["text", "color"].map((ty) =>
+      el(
+        "button",
+        {
+          type: "button",
+          "data-type": ty,
+          class: ty === type ? "active" : "",
+          onclick: (e) => {
+            type = ty;
+            seg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === e.currentTarget));
+            name.focus();
+          },
+        },
+        t("vars.type." + ty)
+      )
+    )
+  );
+  const submit = () => {
+    const n = name.value.trim();
+    if (!C.isValidName(n)) return setStatus(t("err.invalidName"), "err");
+    if (state.vars.some((v) => v.name === n)) return setStatus(t("err.exists", { name: n }), "err");
+    state.vars.unshift({ name: n, type, value: type === "color" ? "#C43E1C" : "" });
+    ui.addingVar = false;
+    saveState();
+    renderVars();
+    const input = document.querySelector('.var-row[data-name="' + CSS.escape(n) + '"] .cell-input');
+    if (input) input.focus();
+    setStatus(type === "color" ? t("msg.colorAdded", { name: n }) : t("msg.varAdded", { name: n }), "ok");
+  };
+  name.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    }
+    if (e.key === "Escape") {
+      ui.addingVar = false;
+      renderVars();
+    }
+  });
+  setTimeout(() => name.focus(), 0);
+  return el(
+    "li",
+    { class: "row add-row", id: "var-add" },
+    seg,
+    name,
+    el("button", { type: "button", class: "btn primary sm", id: "var-add-submit", onclick: submit }, t("vars.add")),
+    iconButton("close", t("ui.cancel"), () => {
+      ui.addingVar = false;
+      renderVars();
+    })
+  );
+}
+
+// ================================================================ rendering: components
+
+function compSelect() {
+  return el(
+    "select",
+    { class: "select", "aria-label": t("comp.select") },
+    Object.keys(state.components).sort().map((n) => el("option", { value: n }, label(n)))
+  );
+}
+
+/** Inline name form used in the inspector (create component / save as variant). */
+function inlineForm(placeholder, buttonText, onSubmit, prefix) {
+  const input = el("input", { class: "input", id: "insp-name", placeholder, autocomplete: "off", "aria-label": placeholder });
+  const submit = () => onSubmit(input.value.trim());
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      submit();
+    }
+    if (e.key === "Escape") {
+      ui.inspectorForm = null;
+      renderInspector();
+    }
+  });
+  setTimeout(() => input.focus(), 0);
+  return el(
+    "div",
+    { class: "inline-form" },
+    prefix ? el("span", { class: "prefix" }, prefix) : null,
+    input,
+    el("button", { type: "button", class: "btn primary sm", id: "insp-submit", onclick: submit }, buttonText),
+    iconButton("close", t("ui.cancel"), () => {
+      ui.inspectorForm = null;
+      renderInspector();
+    })
+  );
+}
+
+function inspectorHead(kind, title, sub, menu) {
+  return el(
+    "div",
+    { class: "insp-head" },
+    el("span", { class: "insp-icon " + kind }, icon(kind === "master" ? "diamond" : kind === "instance" ? "diamondOpen" : "cursor")),
+    el("div", { class: "insp-title" }, el("div", { class: "insp-name" }, title), sub ? el("div", { class: "insp-sub" }, sub) : null),
+    menu || null
+  );
+}
+
+/** Property fields: placeholders of the master text + (instances) colors. */
+function renderProps(s, key, isMaster) {
   const comp = state.components[key];
   const snap = comp.snapshot || {};
-  const src = (snap.text && snap.text.source) || "";
-  const names = C.extractNames(src);
+  const names = C.extractNames((snap.text && snap.text.source) || "");
   const ovr = s.ovr || C.parseOverrides(null);
   const defaults = snap.defaults || {};
-  const box = el("div", { class: "ovr" }, el("h3", {}, isMaster ? t("ovr.defaults") : t("ovr.instance")));
+  const box = el("div", { class: "props" });
 
+  box.append(el("div", { class: "props-title" }, isMaster ? t("ovr.defaults") : t("ovr.instance")));
   if (!names.length) box.append(el("p", { class: "hint" }, rich(t("ovr.tip"))));
+
   for (const n of names) {
     const g = state.vars.find((v) => v.name === n && v.type !== "color");
-    const fallback = isMaster ? (g ? g.value : "") : defaults[n] != null ? defaults[n] : g ? g.value : "";
-    const input = el("input", { type: "text", value: ovr.vars[n] || "", placeholder: fallback || t("ovr.empty"), "aria-label": n });
+    const inherited = isMaster ? (g ? g.value : "") : defaults[n] != null ? defaults[n] : g ? g.value : "";
+    const own = !!ovr.vars[n];
+    const input = el("input", { type: "text", class: "input", value: ovr.vars[n] || "", placeholder: inherited || t("ovr.empty"), "aria-label": n });
     input.addEventListener("change", () => setOverride(s, key, (o) => (o.vars[n] = input.value)));
-    const src = isMaster
-      ? g ? t("ovr.src.global", { value: g.value }) : t("ovr.src.local")
-      : ovr.vars[n] ? t("ovr.src.own") : defaults[n] != null ? t("ovr.src.master") : g ? t("ovr.src.globalShort") : t("ovr.src.none");
-    box.append(el("label", { class: "field" }, el("span", { class: "meta" }, "{{" + n + "}} · " + src), input));
+    box.append(
+      el(
+        "label",
+        { class: "prop" },
+        el("span", { class: "prop-label mono" + (own ? " own" : ""), title: own ? t("ovr.src.own") : inherited ? t("ovr.inherited") : "" }, n),
+        input
+      )
+    );
   }
 
   if (!isMaster) {
@@ -885,172 +1175,151 @@ function renderOverrides(s, key, isMaster) {
       font: snap.text && snap.text.font && snap.text.font.color,
       line: snap.line && snap.line.color,
     };
-    for (const [k, lbl] of [["fill", t("ovr.fill")], ["font", t("ovr.font")], ["line", t("ovr.line")]]) {
+    const colors = el("div", { class: "color-props" });
+    for (const k of ["fill", "font", "line"]) {
       const own = !!ovr[k];
-      const pick = el("input", { type: "color", value: ovr[k] || C.normalizeColor(masterColor[k]) || "#000000", "aria-label": lbl });
+      const val = ovr[k] || C.normalizeColor(masterColor[k]) || "#000000";
+      const pick = el("input", { type: "color", value: val, "aria-label": t("ovr." + k) });
       pick.addEventListener("change", () => setOverride(s, key, (o) => (o[k] = pick.value)));
-      box.append(
+      const sw = el("label", { class: "swatch sm" }, pick);
+      sw.style.background = val;
+      colors.append(
         el(
           "div",
-          { class: "row" },
-          el("span", { class: "meta grow" }, lbl + " · " + (own ? t("ovr.ownColor") : t("ovr.fromMaster"))),
-          pick,
-          el("button", { class: "small", disabled: !own, onclick: () => setOverride(s, key, (o) => (o[k] = null)) }, t("ovr.reset"))
+          { class: "color-prop" + (own ? " own" : "") },
+          sw,
+          el("span", { class: "color-label" }, t("ovr." + k)),
+          own ? iconButton("close", t("ovr.reset"), () => setOverride(s, key, (o) => (o[k] = null)), { class: "icon-btn tiny reset-color" }) : null
         )
       );
     }
-    if (C.serializeOverrides(ovr)) {
-      box.append(
-        el("div", { class: "row" }, el("button", { onclick: () => setOverride(s, key, (o) => {
-          o.vars = {};
-          o.fill = o.font = o.line = null;
-        }) }, t("ovr.resetAll")))
-      );
-    }
+    box.append(colors);
   }
   return box;
 }
 
-function renderSelection() {
-  const info = $("sel-info");
-  const act = $("sel-actions");
-  act.replaceChildren();
+function renderInspector() {
+  const box = $("inspector");
+  box.replaceChildren();
   const sel = ui.selection;
+  const hasComps = Object.keys(state.components).length > 0;
+
   if (!sel || !sel.shapes.length) {
-    info.textContent = sel && (sel.unreadable || sel.partial) ? t("sel.unreadable") : t("sel.none");
+    box.className = "inspector empty";
+    box.append(
+      el("span", { class: "insp-icon" }, icon("cursor")),
+      el("p", {}, sel && (sel.unreadable || sel.partial) ? t("sel.unreadable") : t("sel.none"))
+    );
     return;
   }
-  const hasComps = Object.keys(state.components).length > 0;
+  box.className = "inspector";
+
   if (sel.shapes.length > 1) {
-    info.textContent = t("sel.multi", { n: sel.shapes.length });
+    box.append(inspectorHead("plain", t("sel.multi", { n: sel.shapes.length }), null, menuButton([{ label: t("sel.detachAll"), onclick: detachSelection }])));
     if (hasComps) {
       const s = compSelect();
-      act.append(el("div", { class: "row" }, s, el("button", { onclick: () => linkSelection(s.value) }, t("sel.linkAll"))));
+      box.append(el("div", { class: "insp-actions" }, s, el("button", { type: "button", class: "btn primary sm", onclick: () => linkSelection(s.value) }, t("sel.link"))));
     }
-    act.append(el("div", { class: "row" }, el("button", { onclick: detachSelection }, t("sel.detachAll"))));
     return;
   }
+
   const s = sel.shapes[0];
-  const cname = C.componentNameOf(s.name);
-  const comp = cname && state.components[cname];
+  const key = C.componentNameOf(s.name);
+  const comp = key && state.components[key];
+
   if (comp && isMasterOf(s)) {
-    info.replaceChildren(el("b", {}, t("sel.masterOf", { name: label(cname) })));
-    act.append(el("div", { class: "row" }, el("button", { class: "primary", onclick: () => runSync([cname]) }, t("sel.updateInstances"))));
-    act.append(renderOverrides(s, cname, true));
-  } else if (comp) {
-    info.replaceChildren(el("b", {}, t("sel.instanceOf", { name: label(cname) })));
-    act.append(
-      el(
-        "div",
-        { class: "row" },
-        el("button", { onclick: () => showMaster(cname) }, t("sel.showMaster")),
-        el("button", { onclick: () => makeMaster(cname, s) }, t("sel.makeMaster")),
-        el("button", { onclick: detachSelection }, t("sel.detach"))
-      )
+    const info = ui.compInfo[key];
+    const n = info ? info.instances : 0;
+    box.append(
+      inspectorHead("master", label(key), t("sel.masterSub"), menuButton([
+        { label: t("sel.addVariant"), onclick: () => ((ui.inspectorForm = "variant"), renderInspector()) },
+      ]))
     );
-    const variants = variantsOf(C.splitKey(cname).base);
+    if (ui.inspectorForm === "variant") {
+      box.append(inlineForm(t("new.variantPh"), t("new.create"), (v) => createComponent(C.joinKey(C.splitKey(key).base, v)), C.splitKey(key).base + " /"));
+      box.append(el("p", { class: "hint" }, t("sel.variantFromMasterHint")));
+    }
+    box.append(
+      el("div", { class: "insp-actions" }, el("button", { type: "button", class: "btn primary block", id: "push-btn", onclick: () => runSync([key]) }, icon("sync"), t("sel.push", { n })))
+    );
+    box.append(renderProps(s, key, true));
+    return;
+  }
+
+  if (comp) {
+    const base = C.splitKey(key).base;
+    box.append(
+      inspectorHead("instance", label(key), t("sel.instanceSub"), menuButton([
+        { label: t("sel.showMaster"), onclick: () => showMaster(key) },
+        { label: t("sel.saveVariant"), onclick: () => ((ui.inspectorForm = "variant"), renderInspector()) },
+        { label: t("sel.makeMaster"), onclick: () => makeMaster(key, s) },
+        "sep",
+        { label: t("ovr.resetAll"), disabled: !C.serializeOverrides(s.ovr), onclick: () => setOverride(s, key, (o) => { o.vars = {}; o.fill = o.font = o.line = null; }) },
+        { label: t("sel.detach"), danger: true, onclick: detachSelection },
+      ]))
+    );
+    if (ui.inspectorForm === "variant") {
+      box.append(inlineForm(t("new.variantPh"), t("new.create"), (v) => createComponent(C.joinKey(base, v)), base + " /"));
+      box.append(el("p", { class: "hint" }, t("sel.saveVariantHint")));
+    }
+    const variants = variantsOf(base);
     if (variants.length > 1) {
       const vs = el(
         "select",
-        { "aria-label": t("sel.variant"), onchange: () => switchVariant(s, vs.value) },
-        variants.map((k) => el("option", { value: k, selected: k === cname }, variantLabel(k)))
+        { class: "select", id: "variant-select", "aria-label": t("sel.variant"), onchange: () => switchVariant(s, vs.value) },
+        variants.map((k) => el("option", { value: k, selected: k === key }, variantLabel(k)))
       );
-      act.append(el("div", { class: "row" }, el("span", { class: "meta" }, t("sel.variant")), vs));
+      box.append(el("label", { class: "prop" }, el("span", { class: "prop-label" }, t("sel.variant")), vs));
     }
-    act.append(renderOverrides(s, cname, false));
-  } else if (cname) {
-    info.textContent = t("sel.unregistered", { shape: s.name, name: label(cname) });
-    act.append(
-      el("div", { class: "row" }, el("button", { onclick: () => createComponent(cname) }, t("sel.register")))
-    );
-  } else {
-    info.textContent = t("sel.plain", { shape: s.name, type: s.type });
-    if (hasComps) {
-      const sl = compSelect();
-      act.append(el("div", { class: "row" }, sl, el("button", { onclick: () => linkSelection(sl.value) }, t("sel.link"))));
-    }
+    box.append(renderProps(s, key, false));
+    return;
   }
-}
 
-// ---------------------------------------------------------------- rendering
+  if (key) {
+    box.append(inspectorHead("plain", s.name, t("sel.unregisteredSub")));
+    box.append(el("div", { class: "insp-actions" }, el("button", { type: "button", class: "btn primary block", onclick: () => createComponent(key) }, t("sel.register"))));
+    return;
+  }
 
-function renderVars() {
-  const list = $("var-list");
-  list.replaceChildren();
-  $("var-empty").hidden = state.vars.length > 0;
-  state.vars.forEach((v, idx) => {
-    const remove = el("button", {
-      class: "small danger",
-      title: t("vars.delete"),
-      onclick: () => {
-        state.vars.splice(idx, 1);
-        saveState();
-        renderVars();
-        runApplyVariables();
-      },
-    }, "✕");
-
-    const head = el("div", { class: "head" }, el("span", { class: "name" }, v.name), el("span", { class: "badge" }, v.type === "color" ? t("vars.type.color") : t("vars.type.text")), remove);
-
-    let value;
-    let controls;
-    if (v.type === "color") {
-      const hex = el("input", { type: "text", value: v.value || "", placeholder: "#RRGGBB", "aria-label": t("vars.hex") });
-      const pick = el("input", { type: "color", value: C.normalizeColor(v.value) || "#000000", "aria-label": t("vars.pick") });
-      const commit = (val) => {
-        const c = C.normalizeColor(val);
-        if (!c) return setStatus(t("err.invalidColor", { value: val }), "err");
-        v.value = c;
-        hex.value = c;
-        pick.value = c;
-        saveState();
-        applyVariablesSoon();
-      };
-      pick.addEventListener("input", () => commit(pick.value));
-      hex.addEventListener("change", () => commit(hex.value));
-      value = el("div", { class: "value" }, pick, hex);
-      controls = el(
+  // Plain shape
+  box.append(inspectorHead("plain", s.name, typeLabel(s.type)));
+  if (!COMP_TYPES.includes(s.type)) {
+    box.append(el("p", { class: "hint" }, t("err.typeUnsupported", { type: typeLabel(s.type) })));
+    return;
+  }
+  if (ui.inspectorForm === "create") {
+    box.append(inlineForm(t("new.namePh"), t("new.create"), (n) => createComponent(n)));
+  } else {
+    box.append(
+      el(
         "div",
-        { class: "controls" },
-        el("span", { class: "meta" }, t("vars.bindTo")),
-        el("button", { class: "small", onclick: () => bindColor(v.name, "fill") }, t("vars.bind.fill")),
-        el("button", { class: "small", onclick: () => bindColor(v.name, "line") }, t("vars.bind.line")),
-        el("button", { class: "small", onclick: () => bindColor(v.name, "font") }, t("vars.bind.font")),
-        el("button", { class: "small", onclick: unbindColors, title: t("vars.unbindTip") }, t("vars.unbind"))
-      );
-    } else {
-      const input = el("input", { type: "text", value: v.value || "", placeholder: t("vars.valuePh"), "aria-label": t("vars.valueOf", { name: v.name }) });
-      input.addEventListener("input", () => {
-        v.value = input.value;
-        saveState();
-        applyVariablesSoon();
-      });
-      value = el("div", { class: "value" }, input);
-      controls = el(
-        "div",
-        { class: "controls" },
-        el("button", { class: "small", onclick: () => insertPlaceholder(v.name), title: t("vars.insertTip") }, t("vars.insert", { name: v.name }))
-      );
-    }
-    list.append(el("li", {}, head, value, controls));
-  });
+        { class: "insp-actions" },
+        el("button", { type: "button", class: "btn primary block", id: "create-btn", onclick: () => ((ui.inspectorForm = "create"), renderInspector()) }, icon("diamond"), t("sel.create"))
+      )
+    );
+  }
+  if (hasComps) {
+    const sl = compSelect();
+    box.append(
+      el("div", { class: "insp-actions secondary" }, el("span", { class: "or" }, t("sel.orLink")), sl, el("button", { type: "button", class: "btn sm", id: "link-btn", onclick: () => linkSelection(sl.value) }, t("sel.link")))
+    );
+  }
 }
 
 function renderComps() {
   const list = $("comp-list");
   list.replaceChildren();
+  updateCounts();
   const names = Object.keys(state.components).sort();
   $("comp-empty").hidden = names.length > 0;
-  // Form "New component / Variant of …"
-  const of = $("comp-of");
-  const prev = of.value;
-  const bases = [...new Set(names.map((k) => C.splitKey(k).base))];
-  of.replaceChildren(el("option", { value: "" }, t("new.component")), ...bases.map((b) => el("option", { value: b }, t("new.variantOf", { name: b }))));
-  of.value = bases.includes(prev) ? prev : "";
+  $("comps-footnote").hidden = names.length === 0;
+
   for (const name of names) {
     const comp = state.components[name];
     const info = ui.compInfo[name];
-    let meta = "…";
+    const k = C.splitKey(name);
+    const isVariant = k.variant !== C.DEFAULT_VARIANT;
+    let meta = "";
     if (info) {
       meta = info.masterFound
         ? info.masterSlide
@@ -1058,63 +1327,64 @@ function renderComps() {
           : t("comps.master", { n: info.instances })
         : t("comps.instances", { n: info.instances });
     }
-    const opt = (key, label) => {
-      const cb = el("input", {
-        type: "checkbox",
-        checked: comp[key] !== false,
-        onchange: () => {
-          comp[key] = cb.checked;
-          saveState();
-        },
-      });
-      return el("label", { class: "check meta" }, cb, label);
-    };
-    const confirmDel = ui.pendingDelete === name;
+    const opt = (prop, text) => ({
+      label: text,
+      checked: comp[prop] !== false,
+      onclick: () => {
+        comp[prop] = comp[prop] === false;
+        saveState();
+      },
+    });
+    const confirming = ui.confirmDelete === name;
     list.append(
       el(
         "li",
-        {},
+        { class: "row comp-row" + (isVariant ? " variant" : ""), "data-name": name },
+        el("span", { class: "comp-glyph" }, icon("diamond")),
         el(
           "div",
-          { class: "head" },
-          el("span", { class: "name" }, "◆ " + label(name)),
-          info && !info.masterFound ? el("span", { class: "badge warn" }, t("comps.masterMissing")) : null
+          { class: "comp-text" },
+          el("div", { class: "comp-name" }, isVariant ? k.variant : k.base, info && !info.masterFound ? el("span", { class: "badge warn" }, t("comps.masterMissing")) : null),
+          el("div", { class: "comp-meta" }, meta)
         ),
-        el("div", { class: "meta" }, meta),
-        el("div", { class: "controls" }, opt("syncText", t("comps.syncText")), opt("syncSize", t("comps.syncSize"))),
         el(
-          "div",
-          { class: "controls" },
-          el("button", { class: "small primary", onclick: () => runSync([name]) }, t("comps.sync")),
-          el("button", { class: "small", onclick: () => showMaster(name), disabled: info && !info.masterFound }, t("sel.showMaster")),
-          el(
-            "button",
+          "span",
+          { class: "row-actions" },
+          iconButton("sync", t("comps.sync"), () => runSync([name]), { class: "icon-btn sync-btn" }),
+          iconButton("target", t("sel.showMaster"), () => showMaster(name), { disabled: info && !info.masterFound }),
+          menuButton(() => [
+            opt("syncText", t("comps.syncText")),
+            opt("syncSize", t("comps.syncSize")),
+            "sep",
             {
-              class: "small danger",
+              label: confirming ? t("comps.confirmDelete") : t("comps.delete"),
+              danger: true,
+              keepOpen: !confirming,
               onclick: () => {
-                if (confirmDel) {
-                  ui.pendingDelete = null;
+                if (confirming) {
+                  ui.confirmDelete = null;
                   deleteComponent(name);
                 } else {
-                  ui.pendingDelete = name;
+                  ui.confirmDelete = name;
+                  closeMenu();
                   renderComps();
+                  const btn = document.querySelector('.comp-row[data-name="' + CSS.escape(name) + '"] .menu-btn');
+                  if (btn) btn.click();
                   setTimeout(() => {
-                    if (ui.pendingDelete === name) {
-                      ui.pendingDelete = null;
-                      renderComps();
-                    }
-                  }, 4000);
+                    if (ui.confirmDelete === name) ui.confirmDelete = null;
+                  }, 5000);
                 }
               },
             },
-            confirmDel ? t("comps.confirmDelete") : t("comps.delete")
-          )
+          ])
         )
       )
     );
   }
-  renderSelection();
+  renderInspector();
 }
+
+// ================================================================ shell
 
 function switchTab(tab) {
   document.querySelectorAll(".tab").forEach((b) => {
@@ -1135,14 +1405,10 @@ function switchTab(tab) {
 function applyStaticTexts() {
   document.documentElement.lang = I.getLang();
   document.querySelectorAll("[data-i18n]").forEach((n) => n.replaceChildren(rich(t(n.dataset.i18n))));
-  document.querySelectorAll("[data-i18n-ph]").forEach((n) => (n.placeholder = t(n.dataset.i18nPh)));
-  document.querySelectorAll("[data-i18n-aria]").forEach((n) => n.setAttribute("aria-label", t(n.dataset.i18nAria)));
-  document.querySelectorAll(".lang button").forEach((b) => b.classList.toggle("active", b.dataset.lang === I.getLang()));
-  updateCompNamePlaceholder();
-}
-
-function updateCompNamePlaceholder() {
-  $("comp-name").placeholder = $("comp-of").value ? t("new.variantPh") : t("new.namePh");
+  document.querySelectorAll("[data-i18n-title]").forEach((n) => {
+    n.title = t(n.dataset.i18nTitle);
+    n.setAttribute("aria-label", n.title);
+  });
 }
 
 function setLanguage(lang) {
@@ -1151,7 +1417,6 @@ function setLanguage(lang) {
   applyStaticTexts();
   renderVars();
   renderComps();
-  setStatus(t("ready"));
 }
 
 function showVersion() {
@@ -1160,7 +1425,76 @@ function showVersion() {
   $("version").textContent = "v" + VERSION + " · " + build;
 }
 
-// ---------------------------------------------------------------- start
+function mountToolbarMenus() {
+  $("settings-slot").replaceChildren(
+    menuButton(
+      () => [
+        { heading: t("settings.language") },
+        { label: "English", checked: I.getLang() === "en", onclick: () => setLanguage("en") },
+        { label: "Deutsch", checked: I.getLang() === "de", onclick: () => setLanguage("de") },
+        "sep",
+        { heading: t("settings.behavior") },
+        {
+          label: t("vars.showRaw"),
+          checked: state.showRaw,
+          onclick: () => {
+            state.showRaw = !state.showRaw;
+            saveState();
+            runApplyVariables();
+          },
+        },
+        {
+          label: t("comps.autoSync"),
+          checked: ui.autoSync,
+          onclick: () => {
+            ui.autoSync = !ui.autoSync;
+            lsSet("dc.autoSync", ui.autoSync ? "1" : "0");
+          },
+        },
+      ],
+      { icon: "gear", title: t("settings.title") }
+    )
+  );
+  $("vars-menu-slot").replaceChildren(
+    menuButton(() => [
+      { label: t("vars.apply"), onclick: runApplyVariables },
+      { label: t("vars.scan"), onclick: scanPlaceholders },
+      "sep",
+      {
+        label: t("vars.showRaw"),
+        checked: state.showRaw,
+        onclick: () => {
+          state.showRaw = !state.showRaw;
+          saveState();
+          runApplyVariables();
+        },
+      },
+    ])
+  );
+  $("comps-menu-slot").replaceChildren(
+    menuButton(() => [
+      { label: t("comps.syncAll"), onclick: () => runSync(null) },
+      { label: t("comps.recount"), onclick: refreshCompInfo },
+      "sep",
+      {
+        label: t("comps.autoSync"),
+        checked: ui.autoSync,
+        onclick: () => {
+          ui.autoSync = !ui.autoSync;
+          lsSet("dc.autoSync", ui.autoSync ? "1" : "0");
+        },
+      },
+    ])
+  );
+}
+
+function startAddVar() {
+  ui.addingVar = true;
+  switchTab("vars");
+  renderVars();
+}
+
+// ================================================================ start
 
 Office.onReady((info) => {
   I.setLang(I.detect(Office.context.displayLanguage, lsGet("dc.lang")));
@@ -1170,57 +1504,24 @@ Office.onReady((info) => {
     setStatus(t("hostOnly"), "err");
     return;
   }
-  if (!Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) {
-    $("unsupported").hidden = false;
-  }
+  if (!Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) $("unsupported").hidden = false;
   loadState();
+  ui.autoSync = lsGet("dc.autoSync") === "1";
 
   document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
-
-  $("var-add").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const name = $("var-name").value.trim();
-    if (!C.isValidName(name)) return setStatus(t("err.invalidName"), "err");
-    if (state.vars.some((v) => v.name === name)) return setStatus(t("err.exists", { name }), "err");
-    const type = $("var-type").value;
-    state.vars.push({ name, type, value: type === "color" ? "#C43E1C" : "" });
-    $("var-name").value = "";
-    saveState();
-    renderVars();
-    setStatus(type === "color" ? t("msg.colorAdded", { name }) : t("msg.varAdded", { name }), "ok");
-  });
-
-  $("show-raw").checked = state.showRaw;
-  $("show-raw").addEventListener("change", () => {
-    state.showRaw = $("show-raw").checked;
-    saveState();
-    runApplyVariables();
-  });
-  $("apply-vars").addEventListener("click", runApplyVariables);
-  $("scan-vars").addEventListener("click", scanPlaceholders);
-
-  $("comp-add").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const base = $("comp-of").value;
-    const name = $("comp-name").value.trim();
-    createComponent(base ? C.joinKey(base, name) : name);
-  });
-  $("comp-of").addEventListener("change", updateCompNamePlaceholder);
-  document.querySelectorAll(".lang button").forEach((b) => b.addEventListener("click", () => setLanguage(b.dataset.lang)));
-  $("sync-all").addEventListener("click", () => runSync(null));
-  $("refresh-comps").addEventListener("click", refreshCompInfo);
-
-  $("auto-sync").checked = lsGet("dc.autoSync") === "1";
-  $("auto-sync").addEventListener("change", () => lsSet("dc.autoSync", $("auto-sync").checked ? "1" : "0"));
+  $("var-new").addEventListener("click", startAddVar);
+  $("var-empty-btn").addEventListener("click", startAddVar);
+  $("status-close").addEventListener("click", () => $("status").classList.remove("show"));
+  mountToolbarMenus();
 
   Office.context.document.addHandlerAsync(Office.EventType.DocumentSelectionChanged, debounce(refreshSelection, 250));
 
   renderVars();
   renderComps();
   switchTab(lsGet("dc.tab") === "comps" ? "comps" : "vars");
-  setStatus(t("ready"));
   // Fill in anything typed while the pane was closed (not the shape being edited)
   PowerPoint.run(getSelection)
     .catch(() => ({ shapes: [] }))
-    .then((sel) => autoRender({ skip: sel.shapes }));
+    .then((sel) => autoRender({ skip: sel.shapes }))
+    .then(() => refreshSelection());
 });

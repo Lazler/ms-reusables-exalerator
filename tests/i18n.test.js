@@ -27,10 +27,10 @@ test("language detection defaults to English", () => {
 
 test("t() fills parameters and keeps {{…}} literal", () => {
   I.setLang("en");
-  assert.equal(I.t("vars.insert", { name: "Client" }), "Insert {{Client}}");
-  assert.equal(I.t("msg.synced", { n: 3 }), "3 instance(s) synced.");
+  assert.equal(I.t("vars.insert", { name: "Client" }), "Insert {{Client}} at cursor");
+  assert.equal(I.t("msg.synced", { n: 3 }), "3 instance(s) updated.");
   I.setLang("de");
-  assert.equal(I.t("vars.insert", { name: "Kunde" }), "{{Kunde}} einfügen");
+  assert.equal(I.t("vars.insert", { name: "Kunde" }), "{{Kunde}} am Cursor einfügen");
   assert.equal(I.t("unknown.key"), "unknown.key");
   I.setLang("en");
 });

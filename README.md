@@ -15,44 +15,53 @@ Everything is stored **inside the .pptx**: no server, no database, no account. T
 
 The UI language follows PowerPoint (English, or German for German Office installations). You can switch it manually with **EN / DE** in the pane header.
 
-> **Status: prototype (v0.4).** The logic and UI are covered by unit tests and by browser tests against a simulated PowerPoint API. Real-world testing in PowerPoint is ongoing; see [Known limitations](#known-limitations).
+> **Status: prototype (v0.5).** The logic and UI are covered by unit tests and by browser tests against a simulated PowerPoint API. Real-world testing in PowerPoint is ongoing; see [Known limitations](#known-limitations).
 
 ---
 
 ## How it works
 
-### Variables
-1. **Variables** tab → enter a name (e.g. `Client`) → **Add** → fill in the value.
-2. Type `{{Client}}` in a text box, or click **Insert {{Client}}** to insert it at the cursor.
-3. Change the value and every text box in the deck updates.
+The pane has two tabs. The **gear** icon (top right) holds the language and behavior settings; the **⋯** menus hold less frequent actions.
 
-- **Show placeholders instead of values** switches the whole deck to `{{…}}` so you can edit the templates.
+### Variables
+1. **Variables** tab → **+ New** → choose *Text* or *Color* → type a name (e.g. `Client`) → **Add**.
+2. Type the value directly in the list.
+3. Type `{{Client}}` in any text box on a slide, or put the cursor in a text box and click the insert icon next to the variable.
+   The value is filled in as soon as you click outside the text box.
+
+- Change a value once and every slide updates.
 - If you edit a rendered text directly (e.g. "Offer for ACME" → "New offer for ACME"), the add-in recognizes the value and keeps the variable.
-- **Find placeholders in deck** creates variables for every `{{…}}` already in the deck. This is handy for existing templates.
-- **Color variables:** select shapes and click *Fill*, *Line* or *Text*. When the color changes, all bound shapes follow.
+- **⋯ → Find placeholders in deck** creates variables for every `{{…}}` already in the deck. This is handy for existing templates.
+- **⋯ → Show {{placeholders}} instead of values** switches the whole deck to the templates for editing.
+- **Color variables:** select shapes, then use the **brush** icon next to the color → *As fill / As line color / As text color*. When the color changes, all bound shapes follow.
 
 ### Components
-1. Select a shape or text box → **Components** tab → enter a name → **Create**.
-   The shape is now named `◆ Name ◆` (visible in *Home → Arrange → Selection Pane*).
-2. To create instances, **copy and paste** the master (Ctrl/Cmd + C/V or D), on any slide.
-   Every shape named `◆ Name ◆` is an instance. You can also rename a shape in the Selection Pane, or select it and click **Link as instance**.
-3. Change the master, then click **Sync**. You can also turn on **Auto-sync**, which syncs as soon as you deselect the master.
+The **Components** tab has an *inspector* at the top that always shows what you can do with the current selection:
 
-For each component you choose whether **text** and **size** are synced. You can **detach** a selected instance, or **make it the master**.
+| You select… | The inspector shows |
+|---|---|
+| a plain shape | **Create component**, or *link to* an existing component |
+| a master | **Push changes to N instances** and the component's **default values** |
+| an instance | its **overrides** (text values and colors) and the **variant** dropdown |
+
+1. Select a shape → **Create component** → name it (e.g. `Button`).
+   The shape is now named `◆ Button ◆` (visible in *Home → Arrange → Selection Pane*).
+2. To create instances, **copy and paste** the master (Ctrl/Cmd + D), on any slide.
+3. Change the master, then click **Push changes**. To push automatically when you deselect the master, turn on **⋯ → Auto-push when leaving a master**.
+
+The list below the inspector shows all components with their instance count. Use the icons to push changes or jump to the master. In **⋯** you can choose whether *text* and *size* are synced, or delete the component.
 
 ### Instance overrides
-When you select an instance, the **Components** tab shows **Overrides for this instance**:
-- **Text:** every placeholder in the master text (e.g. `{{Label}}`) gets its own field. A value entered here applies to this instance only. If you leave it empty, the master's default or the global value is used.
-- **Colors:** fill, text color and line can be overridden per instance. *Reset* restores the master's color.
-- When you select the **master**, the box shows the **component defaults** that all instances inherit.
-
-Precedence: **instance → master default → global variable**.
+- **Text:** every placeholder in the master text (e.g. `{{Label}}`) becomes a field. A value typed there applies to this instance only. An empty field shows the inherited value in grey.
+- **Colors:** fill, text and line can be overridden per instance. Overridden values are highlighted and keep their color when you push changes. The **×** resets a color to the master's.
+- On the **master**, the same fields set the **default values** that all instances inherit.
+- Precedence: **instance → master default → global variable**.
 
 ### Variants
-1. Copy the master and change the copy (e.g. make it red).
-2. Select the copy → *New component / variant* → choose **Variant of Button** → name it `Red` → **Create**.
-   The shape is renamed `◆ Button / Red ◆` and becomes the master of that variant.
-3. Select any instance and switch the **Variant** dropdown. The instance keeps its overrides.
+1. Copy an instance or the master and change the copy (e.g. make it red).
+2. With the copy selected: **⋯ → Save as new variant…** → name it `Red`.
+   The copy becomes the master of `◆ Button / Red ◆`.
+3. Select any instance and switch the **Variant** dropdown. Its overrides are kept.
 
 ---
 

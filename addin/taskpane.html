@@ -11,82 +11,64 @@
   <link rel="stylesheet" href="taskpane.css?v=__BUILD__" />
 </head>
 <body>
-  <header>
-    <div class="title-row">
-      <h1>Deck Components <span id="version" class="version"></span></h1>
-      <div class="lang" role="group" aria-label="Language">
-        <button type="button" data-lang="en">EN</button>
-        <button type="button" data-lang="de">DE</button>
-      </div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span class="brand-name">Deck Components</span>
     </div>
-    <nav role="tablist">
-      <button role="tab" class="tab active" data-tab="vars" aria-selected="true" data-i18n="tab.vars">Variables</button>
-      <button role="tab" class="tab" data-tab="comps" aria-selected="false" data-i18n="tab.comps">Components</button>
-    </nav>
+    <span id="settings-slot"></span>
   </header>
 
-  <div id="unsupported" class="notice error" hidden data-i18n="unsupported"></div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" class="tab active" data-tab="vars" aria-selected="true"><span data-i18n="tab.vars">Variables</span><span class="count" id="count-vars"></span></button>
+    <button role="tab" class="tab" data-tab="comps" aria-selected="false"><span data-i18n="tab.comps">Components</span><span class="count" id="count-comps"></span></button>
+  </nav>
+
+  <div id="unsupported" class="notice" hidden data-i18n="unsupported"></div>
 
   <!-- ============ VARIABLES ============ -->
   <main id="tab-vars" class="panel">
-    <section>
-      <h2 data-i18n="vars.title">Variables</h2>
-      <p class="hint" data-i18n="vars.hint"></p>
-      <ul id="var-list" class="list"></ul>
-      <p id="var-empty" class="empty" data-i18n="vars.empty"></p>
-
-      <form id="var-add" class="row">
-        <input id="var-name" data-i18n-ph="vars.namePh" autocomplete="off" required />
-        <select id="var-type" data-i18n-aria="vars.type">
-          <option value="text" data-i18n="vars.type.text">Text</option>
-          <option value="color" data-i18n="vars.type.color">Color</option>
-        </select>
-        <button type="submit" class="primary" data-i18n="vars.add">Add</button>
-      </form>
-    </section>
-
-    <section>
-      <h2 data-i18n="vars.view">View</h2>
-      <label class="check"><input type="checkbox" id="show-raw" /> <span data-i18n="vars.showRaw"></span></label>
-      <div class="row">
-        <button id="apply-vars" class="primary" data-i18n="vars.apply">Update deck</button>
-        <button id="scan-vars" data-i18n="vars.scan">Find placeholders in deck</button>
+    <div class="section-head">
+      <h2 data-i18n="vars.listTitle">In this deck</h2>
+      <div class="section-tools">
+        <span id="vars-menu-slot"></span>
+        <button type="button" class="btn sm" id="var-new"><span data-i18n="vars.new">New</span></button>
       </div>
-    </section>
+    </div>
+    <ul id="var-list" class="rows"></ul>
+
+    <div id="var-empty" class="empty-state" hidden>
+      <div class="empty-title" data-i18n="vars.emptyTitle"></div>
+      <p data-i18n="vars.emptyText"></p>
+      <button type="button" class="btn primary" id="var-empty-btn" data-i18n="vars.emptyBtn"></button>
+    </div>
+
+    <p class="footnote" id="vars-footnote" data-i18n="vars.hint"></p>
   </main>
 
   <!-- ============ COMPONENTS ============ -->
   <main id="tab-comps" class="panel" hidden>
-    <section>
-      <h2 data-i18n="sel.title">Selection</h2>
-      <div id="sel-info" class="sel-info" data-i18n="sel.none"></div>
-      <div id="sel-actions"></div>
-    </section>
+    <section id="inspector" class="inspector empty" aria-live="polite"></section>
 
-    <section>
-      <h2 data-i18n="new.title">New component / variant</h2>
-      <p class="hint" data-i18n="new.hint"></p>
-      <form id="comp-add" class="row">
-        <select id="comp-of" data-i18n-aria="new.kind"><option value="" data-i18n="new.component">New component</option></select>
-        <input id="comp-name" autocomplete="off" required />
-        <button type="submit" class="primary" data-i18n="new.create">Create</button>
-      </form>
-    </section>
+    <div class="section-head">
+      <h2 data-i18n="comps.listTitle">In this deck</h2>
+      <div class="section-tools"><span id="comps-menu-slot"></span></div>
+    </div>
+    <ul id="comp-list" class="rows"></ul>
+    <div id="comp-empty" class="empty-state small" hidden>
+      <div class="empty-title" data-i18n="comps.emptyTitle"></div>
+      <p data-i18n="comps.emptyText"></p>
+    </div>
 
-    <section>
-      <h2 data-i18n="comps.title">Components</h2>
-      <p class="hint" data-i18n="comps.hint"></p>
-      <ul id="comp-list" class="list"></ul>
-      <p id="comp-empty" class="empty" data-i18n="comps.empty"></p>
-      <div class="row">
-        <button id="sync-all" class="primary" data-i18n="comps.syncAll">Sync all</button>
-        <button id="refresh-comps" data-i18n="comps.recount">Recount</button>
-      </div>
-      <label class="check"><input type="checkbox" id="auto-sync" /> <span data-i18n="comps.autoSync"></span></label>
-    </section>
+    <p class="footnote" id="comps-footnote" data-i18n="comps.hint"></p>
   </main>
 
-  <footer id="status" role="status" aria-live="polite"></footer>
+  <footer class="bottombar"><span id="version" class="version"></span></footer>
+
+  <div id="status" class="toast" role="status" aria-live="polite">
+    <span id="status-text"></span>
+    <button type="button" id="status-close" class="icon-btn tiny" data-i18n-title="ui.close">×</button>
+  </div>
 
   <script src="i18n.js?v=__BUILD__"></script>
   <script src="core.js?v=__BUILD__"></script>
