@@ -59,10 +59,11 @@ Beispiel: Button in *Standard*, *Sekundär* und *Rot*.
 Office-Add-ins müssen über **HTTPS** ausgeliefert werden. Am einfachsten geht das mit GitHub Pages. Das Manifest zeigt bereits auf
 `https://lazler.github.io/ms-reusables-exalerator/`.
 
-1. **GitHub Pages aktivieren:** Repo → *Settings → Pages → Source: „GitHub Actions“*.
-   Bei einem privaten Repo setzt Pages einen kostenpflichtigen GitHub-Plan voraus. Alternativ das Repo öffentlich machen (es enthält keine Daten) oder die [lokale Variante](#alternative-lokal-ohne-github-pages) nutzen.
-2. Den Code auf `main` bringen. Der Workflow `.github/workflows/pages.yml` führt die Tests aus und veröffentlicht den Ordner `addin/`.
-   Prüfen: https://lazler.github.io/ms-reusables-exalerator/taskpane.html lädt.
+1. **GitHub Pages einmalig aktivieren:** Repo → *Settings → Pages → Build and deployment*:
+   *Source: „Deploy from a branch“* → Branch **`gh-pages`**, Ordner **`/ (root)`** → *Save*.
+   Das Repo muss öffentlich sein (oder GitHub Pro haben).
+2. Fertig. Bei jedem Push nach `main` führt der Workflow `.github/workflows/pages.yml` die Tests aus und kopiert `addin/` in den Branch `gh-pages`.
+   Nach 1–2 Minuten prüfen, ob https://lazler.github.io/ms-reusables-exalerator/taskpane.html lädt.
 3. **Add-in in PowerPoint laden (Sideloading)**, nur für dich und ohne Store:
    - **PowerPoint im Web:** Präsentation öffnen → *Start → Add-Ins → Weitere Add-Ins → Meine Add-Ins → „Mein Add-In hochladen“* → `addin/manifest.xml`.
    - **Mac:** `addin/manifest.xml` nach `~/Library/Containers/com.microsoft.Powerpoint/Data/Documents/wef/` kopieren (Ordner ggf. anlegen) → PowerPoint neu starten → *Start → Add-Ins*.
