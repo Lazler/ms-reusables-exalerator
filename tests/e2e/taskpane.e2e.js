@@ -139,6 +139,15 @@ const root = path.join(__dirname, "..", "..", "addin");
   check(!(await p.getAttribute("#status", "class") || "").includes("err"), "no red error for unreadable selection");
   await p.evaluate(() => { window.__selFail = 0; __pp.select(1, [21]); }); await wait(400);
 
+  // ---- auto-render: typing {{Client}} renders once the user leaves the text box ----
+  await p.evaluate(() => __pp.slides[0].shapes.push(__pp.mkShape({ id: 30, name: "Typed", type: "TextBox", text: "" })));
+  await select(0, [30]); await wait(400);
+  await p.evaluate(() => (__pp.slides[0].shapes.find((x) => x.id === "30").textFrame.textRange.text = "Hi {{Client}}"));
+  await select(0, [30]); await wait(500); // still in the same box -> must not be touched
+  check((await shape(0, 30)).text === "Hi {{Client}}", "box being edited is left alone: " + (await shape(0, 30)).text);
+  await select(0, [2]); await wait(600);  // leave the box
+  check((await shape(0, 30)).text === "Hi Northwind", "rendered after leaving the box: " + (await shape(0, 30)).text);
+
   // ---- language + version ----
   check((await p.textContent(".tab[data-tab=vars]")) === "Variables", "English UI by default");
   check(/^v\d+\.\d+\.\d+ · dev$/.test(await p.textContent("#version")), "version shown: " + await p.textContent("#version"));

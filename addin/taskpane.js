@@ -5,7 +5,7 @@
 const C = DCCore;
 const I = DCI18n;
 const t = I.t;
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 const STATE_KEY = "deckComponents.v1";
 const TEXT_TYPES = ["GeometricShape", "TextBox", "Placeholder"];
 const COMP_TYPES = ["GeometricShape", "TextBox"];
@@ -122,14 +122,17 @@ function lsSet(k, v) {
 // ---------------------------------------------------------------- PowerPoint access
 
 /** Loads all shapes on all slides (group contents excluded). */
-async function loadShapes(ctx) {
+async function loadShapes(ctx, slideIds) {
   const slides = ctx.presentation.slides;
   slides.load("items/id");
   await ctx.sync();
-  slides.items.forEach((sl) => sl.shapes.load("items/id,items/name,items/type"));
+  const wanted = slides.items
+    .map((sl, i) => ({ sl, i }))
+    .filter(({ sl }) => !slideIds || slideIds.includes(sl.id));
+  wanted.forEach(({ sl }) => sl.shapes.load("items/id,items/name,items/type"));
   await ctx.sync();
   const out = [];
-  slides.items.forEach((sl, i) =>
+  wanted.forEach(({ sl, i }) =>
     sl.shapes.items.forEach((sh) =>
       out.push({ slideId: sl.id, slideIndex: i, shape: sh, id: sh.id, name: sh.name, type: sh.type })
     )
@@ -247,8 +250,16 @@ function effectiveVars(shapeName, ovr) {
 }
 
 /** Renders all text boxes and color bindings in the deck. */
-async function applyVariables(ctx) {
-  const all = await loadShapes(ctx);
+/**
+ * @param opts.slideIds  only these slides (default: whole deck)
+ * @param opts.skip      shapes to leave alone, e.g. the one the user is typing in
+ */
+async function applyVariables(ctx, opts) {
+  opts = opts || {};
+  const skip = opts.skip || [];
+  const all = (await loadShapes(ctx, opts.slideIds)).filter(
+    (s) => !skip.some((k) => k.slideId === s.slideId && k.id === s.id)
+  );
   const items = await loadEach(ctx, all, (it) => {
     it.tags = {};
     for (const k of Object.values(TAG)) it.tags[k] = loadTag(it.shape, k);
@@ -313,6 +324,25 @@ function runApplyVariables() {
   });
 }
 const applyVariablesSoon = debounce(runApplyVariables, 700);
+
+/** Nothing to render when there are no variables, bindings or component defaults. */
+const hasRenderables = () => state.vars.length > 0 || Object.keys(state.components).length > 0;
+
+/**
+ * Quiet re-render: used when the user leaves a text box and when the pane opens.
+ * Only reports something if text actually changed or a placeholder is unknown.
+ */
+function autoRender(opts) {
+  if (!hasRenderables()) return Promise.resolve();
+  return queue("act.apply", async () => {
+    const r = await PowerPoint.run((ctx) => applyVariables(ctx, opts));
+    if (r.changed) {
+      const msg = t("msg.applied", { fields: r.fields, changed: r.changed });
+      if (r.missing.length) setStatus(msg + "\n" + t("msg.missing", { names: r.missing.join(", ") }), "warn");
+      else setStatus(msg, "ok");
+    }
+  });
+}
 
 function scanPlaceholders() {
   return queue("act.scan", async () => {
@@ -805,6 +835,13 @@ function refreshSelection() {
     ui.selection = sel;
     renderSelection();
 
+    // Auto-render: fill in placeholders the user just typed, once they leave the
+    // text box. The shapes that are selected now are skipped, because the user may
+    // still be typing in them and PowerPoint would overwrite our change.
+    const prev = ui.lastSelection;
+    const slideIds = [...new Set([prev && prev.slideId, sel.slideId].filter(Boolean))];
+    if (prev && slideIds.length) autoRender({ slideIds, skip: sel.shapes });
+
     // Auto-sync: the selection has left a master
     if ($("auto-sync").checked && ui.lastSelection) {
       const left = ui.lastSelection.shapes.filter(
@@ -1182,4 +1219,8 @@ Office.onReady((info) => {
   renderComps();
   switchTab(lsGet("dc.tab") === "comps" ? "comps" : "vars");
   setStatus(t("ready"));
+  // Fill in anything typed while the pane was closed (not the shape being edited)
+  PowerPoint.run(getSelection)
+    .catch(() => ({ shapes: [] }))
+    .then((sel) => autoRender({ skip: sel.shapes }));
 });

@@ -6,7 +6,7 @@ task pane URL so that Office loads fresh files after an update.
 """
 import pathlib
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>

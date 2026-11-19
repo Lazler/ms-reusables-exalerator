@@ -6,7 +6,7 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
            xsi:type="TaskPaneApp">
   <Id>9f1d7c2e-5b0a-4f6e-8a51-3c2d7e4b6a10</Id>
-  <Version>0.4.0.0</Version>
+  <Version>0.4.1.0</Version>
   <ProviderName>Deck Components</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Deck Components (local)">
@@ -30,7 +30,7 @@
     </Sets>
   </Requirements>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html?v=0.4.0"/>
+    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html?v=0.4.1"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
@@ -75,7 +75,7 @@
         <bt:Image id="DC.Icon80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="DC.Pane.Url" DefaultValue="https://localhost:3000/taskpane.html?v=0.4.0"/>
+        <bt:Url id="DC.Pane.Url" DefaultValue="https://localhost:3000/taskpane.html?v=0.4.1"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="DC.Group.Label" DefaultValue="Deck Components (local)">

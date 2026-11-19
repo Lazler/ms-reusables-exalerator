@@ -6,7 +6,7 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
            xsi:type="TaskPaneApp">
   <Id>53a05a92-23f5-4bdb-b3dd-cc0981c30b41</Id>
-  <Version>0.4.0.0</Version>
+  <Version>0.4.1.0</Version>
   <ProviderName>Deck Components</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Deck Components">
@@ -30,7 +30,7 @@
     </Sets>
   </Requirements>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://lazler.github.io/ms-reusables-exalerator/taskpane.html?v=0.4.0"/>
+    <SourceLocation DefaultValue="https://lazler.github.io/ms-reusables-exalerator/taskpane.html?v=0.4.1"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
@@ -75,7 +75,7 @@
         <bt:Image id="DC.Icon80" DefaultValue="https://lazler.github.io/ms-reusables-exalerator/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
-        <bt:Url id="DC.Pane.Url" DefaultValue="https://lazler.github.io/ms-reusables-exalerator/taskpane.html?v=0.4.0"/>
+        <bt:Url id="DC.Pane.Url" DefaultValue="https://lazler.github.io/ms-reusables-exalerator/taskpane.html?v=0.4.1"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="DC.Group.Label" DefaultValue="Deck Components">
