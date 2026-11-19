@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Replaced with the commit hash on deploy; used for cache busting and the version label. -->
+  <meta name="dc-build" content="360a780" />
+  <meta http-equiv="Cache-Control" content="no-cache" />
+  <title>Deck Components</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <link rel="stylesheet" href="taskpane.css?v=360a780" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <span class="brand-name">Deck Components</span>
+    </div>
+    <span id="settings-slot"></span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" class="tab active" data-tab="vars" aria-selected="true"><span data-i18n="tab.vars">Variables</span><span class="count" id="count-vars"></span></button>
+    <button role="tab" class="tab" data-tab="comps" aria-selected="false"><span data-i18n="tab.comps">Components</span><span class="count" id="count-comps"></span></button>
+  </nav>
+
+  <div id="unsupported" class="notice" hidden data-i18n="unsupported"></div>
+
+  <!-- ============ VARIABLES ============ -->
+  <main id="tab-vars" class="panel">
+    <div class="section-head">
+      <h2 data-i18n="vars.listTitle">In this deck</h2>
+      <div class="section-tools">
+        <span id="vars-menu-slot"></span>
+        <button type="button" class="btn sm" id="var-new"><span data-i18n="vars.new">New</span></button>
+      </div>
+    </div>
+    <ul id="var-list" class="rows"></ul>
+
+    <div id="var-empty" class="empty-state" hidden>
+      <div class="empty-title" data-i18n="vars.emptyTitle"></div>
+      <p data-i18n="vars.emptyText"></p>
+      <button type="button" class="btn primary" id="var-empty-btn" data-i18n="vars.emptyBtn"></button>
+    </div>
+
+    <p class="footnote" id="vars-footnote" data-i18n="vars.hint"></p>
+  </main>
+
+  <!-- ============ COMPONENTS ============ -->
+  <main id="tab-comps" class="panel" hidden>
+    <section id="inspector" class="inspector empty" aria-live="polite"></section>
+
+    <div class="section-head">
+      <h2 data-i18n="comps.listTitle">In this deck</h2>
+      <div class="section-tools"><span id="comps-menu-slot"></span></div>
+    </div>
+    <ul id="comp-list" class="rows"></ul>
+    <div id="comp-empty" class="empty-state small" hidden>
+      <div class="empty-title" data-i18n="comps.emptyTitle"></div>
+      <p data-i18n="comps.emptyText"></p>
+    </div>
+
+    <p class="footnote" id="comps-footnote" data-i18n="comps.hint"></p>
+  </main>
+
+  <footer class="bottombar"><span id="version" class="version"></span></footer>
+
+  <div id="status" class="toast" role="status" aria-live="polite">
+    <span id="status-text"></span>
+    <button type="button" id="status-close" class="icon-btn tiny" data-i18n-title="ui.close">×</button>
+  </div>
+
+  <script src="i18n.js?v=360a780"></script>
+  <script src="core.js?v=360a780"></script>
+  <script src="taskpane.js?v=360a780"></script>
+</body>
+</html>
