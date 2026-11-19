@@ -1,7 +1,7 @@
-name: Add-in auf GitHub Pages veröffentlichen
+name: Deploy add-in to GitHub Pages
 
-# Testet und kopiert den Ordner addin/ in den Branch gh-pages.
-# GitHub Pages liefert diesen Branch unter https://lazler.github.io/ms-reusables-exalerator/ aus.
+# Runs the tests and copies addin/ into the gh-pages branch.
+# GitHub Pages serves that branch at https://lazler.github.io/ms-reusables-exalerator/
 
 on:
   push:
@@ -24,16 +24,18 @@ jobs:
         with:
           node-version: 22
       - run: npm test
-      - name: addin/ nach gh-pages veröffentlichen
+      - name: Publish addin/ to gh-pages
         run: |
           set -e
           SHA=$(git rev-parse --short HEAD)
           cp -r addin "$RUNNER_TEMP/site"
+          # Stamp the build: version label + cache busting for css/js
+          sed -i "s/__BUILD__/$SHA/g" "$RUNNER_TEMP/site/taskpane.html"
           touch "$RUNNER_TEMP/site/.nojekyll"
           cd "$RUNNER_TEMP/site"
           git init -q -b gh-pages
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -q -m "Add-in veröffentlicht aus $SHA"
+          git commit -q -m "Deploy add-in from $SHA"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages

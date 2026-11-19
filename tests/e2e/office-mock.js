@@ -23,10 +23,10 @@
     return sh;
   }
   const slides = [
-    { id: "256#", shapes: [mkShape({id:2,name:"Titel",type:"TextBox",text:"Angebot für {{Kunde}}"}), mkShape({id:3,name:"Box",fill:"#FF0000",text:"Los"})] },
-    { id: "257#", shapes: [mkShape({id:2,name:"Text",type:"TextBox",text:"{{Kunde}} – {{Projekt}}"}), mkShape({id:4,name:"Bild",type:"Image"})] },
+    { id: "256#", shapes: [mkShape({id:2,name:"Title",type:"TextBox",text:"Offer for {{Client}}"}), mkShape({id:3,name:"Box",fill:"#FF0000",text:"Go"})] },
+    { id: "257#", shapes: [mkShape({id:2,name:"Text",type:"TextBox",text:"{{Client}} – {{Project}}"}), mkShape({id:4,name:"Picture",type:"Image"})] },
   ];
-  // Bild hat kein Textfeld -> Zugriff wirft beim sync
+  // A picture has no text frame -> accessing it throws on sync
   slides[1].shapes[1].textFrame = { get textRange(){ window.__badAccess = true; return { load(){ window.__pendingError = true; } }; } };
   let selection = { slide: 0, shapes: [] };
   const coll = (arr) => ({ items: arr, load(){}, getCount(){ return { value: arr.length }; }, getItemAt(i){ return arr[i]; } });

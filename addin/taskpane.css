@@ -89,3 +89,7 @@ footer.warn { color: var(--warn); }
 .grow { flex: 1; }
 input[type="color"] { width: 36px; height: 28px; padding: 1px; }
 .version { font-size: 11px; font-weight: 400; color: var(--muted); }
+.title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-right: 10px; }
+.lang { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.lang button { border: 0; border-radius: 0; padding: 2px 7px; font-size: 11px; background: var(--bg); color: var(--muted); }
+.lang button.active { background: var(--accent); color: var(--accent-fg); }

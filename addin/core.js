@@ -1,6 +1,6 @@
 /*
- * Deck Components – reine Logik ohne Office-Abhängigkeit.
- * Läuft im Browser (window.DCCore) und in Node (für Tests).
+ * Deck Components – pure logic without any Office dependency.
+ * Runs in the browser (window.DCCore) and in Node (for tests).
  */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
@@ -8,12 +8,12 @@
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  // {{Name}} – Name darf Buchstaben, Ziffern, Leerzeichen, _ . - enthalten
+  // {{Name}} – a name may contain letters, digits, spaces, _ . -
   const VAR_RE = /\{\{\s*([\p{L}\p{N}_.\- ]+?)\s*\}\}/gu;
-  const VAR_TEST_RE = /\{\{\s*([\p{L}\p{N}_.\- ]+?)\s*\}\}/u; // ohne g: kein lastIndex-Zustand
+  const VAR_TEST_RE = /\{\{\s*([\p{L}\p{N}_.\- ]+?)\s*\}\}/u; // no g flag: no lastIndex state
   const NAME_RE = /^[\p{L}\p{N}_.\- ]+$/u;
 
-  // Komponenten-Namenskonvention im Auswahlbereich: "◆ Button ◆"
+  // Component naming convention in the Selection Pane: "◆ Button ◆"
   const COMP_MARK = "◆";
   const COMP_RE = /^\s*◆\s*(.+?)\s*◆/u;
 
@@ -40,7 +40,7 @@
     return map;
   }
 
-  /** Ersetzt {{Name}} durch Werte. Unbekannte Namen bleiben stehen. */
+  /** Replaces {{Name}} with values. Unknown names are left as they are. */
   function render(tpl, vars) {
     const map = varMap(vars);
     const missing = [];
@@ -52,7 +52,7 @@
     return { text, missing };
   }
 
-  /** PowerPoint liefert \r bzw. \v statt \n – nur für Vergleiche normalisieren. */
+  /** PowerPoint uses \r or \v instead of \n – normalize for comparisons only. */
   function normalize(t) {
     return (t == null ? "" : String(t)).replace(/\r\n|\r|\v|\u000b/g, "\n").replace(/\s+$/, "");
   }
@@ -62,9 +62,8 @@
   }
 
   /**
-   * Wurde ein gerenderter Text vom Nutzer bearbeitet, versuchen wir, die
-   * Werte der Variablen, die vorher im Template standen, wieder in
-   * Platzhalter zurückzuverwandeln ("Hallo ACME" -> "Hallo {{Kunde}}").
+   * If the user edited a rendered text, turn the values of the variables that
+   * were in the old template back into placeholders ("Hello ACME" -> "Hello {{Client}}").
    */
   function reabsorb(current, oldTpl, vars) {
     const map = varMap(vars);
@@ -72,7 +71,7 @@
       .filter((n) => map.has(n) && map.get(n).length >= 2)
       .sort((a, b) => map.get(b).length - map.get(a).length);
     let text = current || "";
-    // Erst Platzhalter maskieren, damit wir sie nicht doppelt ersetzen
+    // Mask existing placeholders first so they are not replaced twice
     const tokens = [];
     const mask = (s) =>
       s.replace(VAR_RE, (w) => {
@@ -91,15 +90,15 @@
   }
 
   /**
-   * Entscheidet, welches Template für ein Textfeld gilt.
-   * @param current  aktueller Text in PowerPoint
-   * @param tpl      gespeichertes Template (Tag) oder null
-   * @param lastOut  zuletzt von uns geschriebener Text (Tag) oder null
-   * @returns Template-String oder null (= Feld hat keine Variablen mehr)
+   * Decides which template applies to a text box.
+   * @param current  current text in PowerPoint
+   * @param tpl      stored template (tag) or null
+   * @param lastOut  text we wrote last time (tag) or null
+   * @returns template string, or null (= the box has no variables any more)
    */
   /**
-   * Leitet aus Template + zuletzt geschriebenem Text die damals eingesetzten
-   * Werte ab ("Hallo {{Kunde}}" + "Hallo ACME" -> {Kunde: "ACME"}).
+   * Derives the values that were filled in from the template and the last written
+   * text ("Hello {{Client}}" + "Hello ACME" -> {Client: "ACME"}).
    */
   function extractValues(tpl, out) {
     if (tpl == null || out == null) return null;
@@ -127,8 +126,8 @@
   function resolveTemplate(current, tpl, lastOut, vars) {
     if (tpl) {
       if (lastOut == null || sameText(current, lastOut)) return tpl;
-      // Nutzer hat den Text geändert. Zurückverwandeln mit den Werten, die
-      // damals eingesetzt waren (nicht den aktuellen – die können neu sein).
+      // The user changed the text. Convert back using the values that were
+      // filled in at the time (not the current ones – those may be new).
       const before = extractValues(tpl, lastOut);
       let candidate = before ? reabsorb(current, tpl, before) : current;
       candidate = reabsorb(candidate, tpl, vars);
@@ -160,9 +159,9 @@
     return n ? n : shapeName;
   }
 
-  // ---- Varianten: Schlüssel "Button / Sekundär" ------------------------
+  // ---- Variants: key "Button / Secondary" -------------------------------
   const VARIANT_SEP = " / ";
-  const DEFAULT_VARIANT = "Standard";
+  const DEFAULT_VARIANT = "Default";
 
   function splitKey(key) {
     const i = (key || "").indexOf("/");
@@ -173,10 +172,10 @@
   function joinKey(base, variant) {
     base = base.trim();
     variant = (variant || "").trim();
-    return !variant || variant === DEFAULT_VARIANT ? base : base + VARIANT_SEP + variant;
+    return !variant || variant === DEFAULT_VARIANT || variant === "Standard" ? base : base + VARIANT_SEP + variant;
   }
 
-  // ---- Überschreibungen pro Form (Tag DC_OVR, JSON) ----------------------
+  // ---- Per-shape overrides (tag DC_OVR, JSON) -----------------------------
   function parseOverrides(raw) {
     let o = {};
     try {
@@ -192,7 +191,7 @@
     };
   }
 
-  /** null, wenn nichts überschrieben ist (dann Tag löschen). */
+  /** null when nothing is overridden (then the tag is removed). */
   function serializeOverrides(o) {
     const vars = {};
     for (const [k, v] of Object.entries((o && o.vars) || {})) if (v != null && v !== "") vars[k] = String(v);
@@ -202,7 +201,7 @@
     return Object.keys(out).length ? JSON.stringify(out) : null;
   }
 
-  /** Globale Variablen, überlagert von Objekten {Name: Wert} (spätere gewinnen). */
+  /** Global variables overlaid by {name: value} objects (later layers win). */
   function mergeVars(globalVars, ...layers) {
     const map = new Map();
     for (const v of globalVars || []) map.set(v.name, v.value == null ? "" : String(v.value));

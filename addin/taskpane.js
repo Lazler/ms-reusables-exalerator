@@ -1,19 +1,22 @@
-/* Deck Components – Seitenbereich (Office.js / PowerPoint) */
-/* global Office, PowerPoint, DCCore */
+/* Deck Components – task pane (Office.js / PowerPoint) */
+/* global Office, PowerPoint, DCCore, DCI18n */
 "use strict";
 
 const C = DCCore;
+const I = DCI18n;
+const t = I.t;
+const VERSION = "0.4.0";
 const STATE_KEY = "deckComponents.v1";
 const TEXT_TYPES = ["GeometricShape", "TextBox", "Placeholder"];
 const COMP_TYPES = ["GeometricShape", "TextBox"];
 const TAG = { TPL: "DC_TPL", OUT: "DC_OUT", FILL: "DC_FILL", LINE: "DC_LINE", FONT: "DC_FONT", OVR: "DC_OVR" };
 
-/** Persistiert in der .pptx (Document Settings). */
+/** Persisted inside the .pptx (document settings). */
 let state = { vars: [], components: {}, showRaw: false };
-/** Nur zur Laufzeit. */
+/** Runtime only. */
 const ui = { compInfo: {}, selection: null, lastSelection: null, pendingDelete: null };
 
-// ---------------------------------------------------------------- Hilfen
+// ---------------------------------------------------------------- helpers
 
 const $ = (id) => document.getElementById(id);
 
@@ -36,11 +39,20 @@ function setStatus(msg, kind) {
   f.className = kind || "";
 }
 
+/** Renders text and shows {{…}} and ◆ … ◆ as inline code. */
+function rich(text) {
+  const frag = document.createDocumentFragment();
+  String(text)
+    .split(/(\{\{[^{}]+\}\}|◆[^◆]+◆)/u)
+    .forEach((part, i) => frag.append(i % 2 ? el("code", {}, part) : part));
+  return frag;
+}
+
 function errText(e) {
-  if (!e) return "Unbekannter Fehler";
+  if (!e) return t("err.unknown");
   let s = e.message || String(e);
   if (e.code) s += " [" + e.code + "]";
-  if (e.debugInfo && e.debugInfo.errorLocation) s += "\nOrt: " + e.debugInfo.errorLocation;
+  if (e.debugInfo && e.debugInfo.errorLocation) s += "\n" + t("err.location") + ": " + e.debugInfo.errorLocation;
   return s;
 }
 
@@ -52,7 +64,7 @@ function debounce(fn, ms) {
   };
 }
 
-/** Alle PowerPoint-Aufrufe nacheinander ausführen, Fehler im Statusbereich zeigen. */
+/** Runs all PowerPoint calls one after another and reports errors in the status bar. */
 let chain = Promise.resolve();
 function queue(label, fn) {
   if (typeof label === "function") {
@@ -61,7 +73,7 @@ function queue(label, fn) {
   }
   const p = chain.then(fn).catch((e) => {
     console.error(label, e);
-    setStatus("Fehler" + (label ? " bei „" + label + "“" : "") + ": " + errText(e), "err");
+    setStatus((label ? t("err.during", { action: t(label) }) : t("err.prefix")) + ": " + errText(e), "err");
   });
   chain = p;
   return p;
@@ -73,7 +85,7 @@ function saveState() {
   return new Promise((resolve) =>
     s.saveAsync((r) => {
       if (r.status !== Office.AsyncResultStatus.Succeeded) {
-        setStatus("Speichern im Dokument fehlgeschlagen: " + (r.error && r.error.message), "err");
+        setStatus(t("err.save", { error: r.error && r.error.message }), "err");
       }
       resolve();
     })
@@ -88,7 +100,7 @@ function loadState() {
       state = { vars: s.vars || [], components: s.components || {}, showRaw: !!s.showRaw };
     }
   } catch (e) {
-    setStatus("Gespeicherter Zustand ist beschädigt: " + errText(e), "err");
+    setStatus(t("err.state", { error: errText(e) }), "err");
   }
 }
 
@@ -103,13 +115,13 @@ function lsSet(k, v) {
   try {
     localStorage.setItem(k, v);
   } catch (_) {
-    /* egal */
+    /* storage unavailable – ignore */
   }
 }
 
-// ---------------------------------------------------------------- PowerPoint-Zugriff
+// ---------------------------------------------------------------- PowerPoint access
 
-/** Lädt alle Formen aller Folien (ohne Gruppeninhalte). */
+/** Loads all shapes on all slides (group contents excluded). */
 async function loadShapes(ctx) {
   const slides = ctx.presentation.slides;
   slides.load("items/id");
@@ -133,9 +145,8 @@ function loadTag(shape, key) {
 const tagVal = (t) => (t && !t.isNullObject ? t.value : null);
 
 /**
- * Lädt etwas für viele Elemente in einem Rutsch. Schlägt das fehl (z. B. weil eine
- * exotische Form kein Textfeld hat), wird Element für Element geladen und
- * fehlerhafte Elemente werden übersprungen.
+ * Loads data for many items in one batch. If that fails (e.g. an exotic shape has
+ * no text frame), it retries item by item and skips the failing ones.
  */
 async function loadEach(ctx, items, loader) {
   if (!items.length) return items;
@@ -151,7 +162,7 @@ async function loadEach(ctx, items, loader) {
         await ctx.sync();
         ok.push(it);
       } catch (e) {
-        console.warn("Übersprungen:", it.name, e);
+        console.warn("Skipped:", it.name, e);
       }
     }
     return ok;
@@ -159,9 +170,9 @@ async function loadEach(ctx, items, loader) {
 }
 
 /**
- * Liest die aktuelle Auswahl. PowerPoint im Web wirft hier in manchen Zuständen
- * eine GeneralException (Fokus in der Folienleiste, Text im Bearbeitungsmodus,
- * Gruppen/Platzhalter). Deshalb mehrere Rückfallstufen statt Abbruch.
+ * Reads the current selection. PowerPoint on the web throws a GeneralException in
+ * some states (focus in the thumbnail pane, text in edit mode, groups/placeholders),
+ * so this falls back in stages instead of failing.
  */
 async function getSelection(ctx) {
   let slideId = null;
@@ -171,21 +182,21 @@ async function getSelection(ctx) {
     await ctx.sync();
     slideId = slides.items.length ? slides.items[0].id : null;
   } catch (e) {
-    console.warn("Folienauswahl nicht lesbar", e);
+    console.warn("Slide selection not readable", e);
   }
   const wrap = (sh, type) => ({ shape: sh, id: sh.id, name: sh.name, type, slideId });
 
-  // Stufe 1: alles in einem Rutsch
+  // Stage 1: everything in one batch
   try {
     const shapes = ctx.presentation.getSelectedShapes();
     shapes.load("items/id,items/name,items/type");
     await ctx.sync();
     return { slideId, shapes: shapes.items.map((sh) => wrap(sh, sh.type)) };
   } catch (e) {
-    console.warn("Auswahl Stufe 1 fehlgeschlagen", e);
+    console.warn("Selection stage 1 failed", e);
   }
 
-  // Stufe 2: Form für Form, Typ optional
+  // Stage 2: shape by shape, type optional
   const list = [];
   try {
     const shapes = ctx.presentation.getSelectedShapes();
@@ -202,20 +213,20 @@ async function getSelection(ctx) {
           await ctx.sync();
           type = sh.type;
         } catch (_) {
-          /* Typ unbekannt */
+          /* type unknown */
         }
         list.push(wrap(sh, type));
       } catch (e) {
-        console.warn("Form " + i + " der Auswahl nicht lesbar", e);
+        console.warn("Selected shape " + i + " not readable", e);
       }
     }
   } catch (e) {
-    console.warn("Auswahl Stufe 2 fehlgeschlagen", e);
+    console.warn("Selection stage 2 failed", e);
   }
   return { slideId, shapes: list, partial: true };
 }
 
-// ---------------------------------------------------------------- Variablen
+// ---------------------------------------------------------------- variables
 
 const textVars = () => state.vars.filter((v) => v.type !== "color");
 const colorOf = (name) => {
@@ -223,19 +234,19 @@ const colorOf = (name) => {
   return v ? C.normalizeColor(v.value) : null;
 };
 
-/** Standardwerte, die im Master einer Komponente gesetzt sind. */
+/** Default values set on a component's master. */
 function compDefaults(shapeName) {
   const key = C.componentNameOf(shapeName);
   const comp = key && state.components[key];
   return (comp && comp.snapshot && comp.snapshot.defaults) || {};
 }
 
-/** Global → Master-Standard → eigene Überschreibung der Form. */
+/** Global → master default → the shape's own override. */
 function effectiveVars(shapeName, ovr) {
   return C.mergeVars(textVars(), compDefaults(shapeName), ovr.vars);
 }
 
-/** Rendert alle Textfelder und Farbbindungen im Deck. */
+/** Renders all text boxes and color bindings in the deck. */
 async function applyVariables(ctx) {
   const all = await loadShapes(ctx);
   const items = await loadEach(ctx, all, (it) => {
@@ -275,8 +286,7 @@ async function applyVariables(ctx) {
         if (tagVal(it.tags[TAG.OUT]) != null) it.shape.tags.delete(TAG.OUT);
       }
     }
-    // Farben
-    // Farben: Instanz-Überschreibung > Farbvariable
+    // Colors: instance override > color variable
     const fill = ovr.fill || colorOf(tagVal(it.tags[TAG.FILL]));
     if (fill) it.shape.fill.setSolidColor(fill);
     const line = ovr.line || colorOf(tagVal(it.tags[TAG.LINE]));
@@ -292,20 +302,20 @@ async function applyVariables(ctx) {
 }
 
 function runApplyVariables() {
-  return queue("Deck aktualisieren", async () => {
-    setStatus("Aktualisiere …");
+  return queue("act.apply", async () => {
+    setStatus(t("msg.updating"));
     const r = await PowerPoint.run(applyVariables);
-    let msg = `${r.fields} Textfeld(er) mit Variablen, ${r.changed} geändert.`;
-    if (state.showRaw) msg += " (Platzhalter-Ansicht)";
+    let msg = t("msg.applied", { fields: r.fields, changed: r.changed });
+    if (state.showRaw) msg += " " + t("msg.rawView");
     if (r.missing.length) {
-      setStatus(msg + "\nUnbekannte Platzhalter: " + r.missing.join(", ") + " – unten anlegen oder „Platzhalter im Deck finden“.", "warn");
+      setStatus(msg + "\n" + t("msg.missing", { names: r.missing.join(", ") }), "warn");
     } else setStatus(msg, "ok");
   });
 }
 const applyVariablesSoon = debounce(runApplyVariables, 700);
 
 function scanPlaceholders() {
-  return queue("Platzhalter finden", async () => {
+  return queue("act.scan", async () => {
     const names = await PowerPoint.run(async (ctx) => {
       const all = await loadShapes(ctx);
       const items = await loadEach(ctx, all.filter((s) => TEXT_TYPES.includes(s.type)), (it) => {
@@ -331,42 +341,42 @@ function scanPlaceholders() {
     if (fresh.length) {
       await saveState();
       renderVars();
-      setStatus("Neu angelegt: " + fresh.join(", ") + ". Werte eintragen.", "ok");
+      setStatus(t("msg.scanNew", { names: fresh.join(", ") }), "ok");
     } else {
-      setStatus(names.length ? "Alle Platzhalter sind bereits angelegt (" + names.length + ")." : "Keine Platzhalter im Deck gefunden.", "ok");
+      setStatus(names.length ? t("msg.scanAll", { n: names.length }) : t("msg.scanNone"), "ok");
     }
   });
 }
 
 function insertPlaceholder(name) {
-  return queue("Platzhalter einfügen", async () => {
+  return queue("act.insert", async () => {
     await PowerPoint.run(async (ctx) => {
       const tr = ctx.presentation.getSelectedTextRangeOrNullObject();
       await ctx.sync();
-      if (tr.isNullObject) throw new Error("Bitte zuerst in ein Textfeld klicken (Cursor setzen).");
+      if (tr.isNullObject) throw new Error(t("err.noCursor"));
       tr.text = "{{" + name + "}}";
       await ctx.sync();
     });
-    setStatus("{{" + name + "}} eingefügt.", "ok");
+    setStatus(t("msg.inserted", { name }), "ok");
   }).then(() => runApplyVariables());
 }
 
 function bindColor(name, kind) {
   const key = { fill: TAG.FILL, line: TAG.LINE, font: TAG.FONT }[kind];
-  return queue("Farbe binden", async () => {
+  return queue("act.bind", async () => {
     const n = await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
-      if (!sel.shapes.length) throw new Error("Bitte zuerst eine oder mehrere Formen markieren.");
+      if (!sel.shapes.length) throw new Error(t("err.noSelection"));
       sel.shapes.forEach((s) => s.shape.tags.add(key, name));
       await ctx.sync();
       return sel.shapes.length;
     });
-    setStatus(`${n} Form(en) an „${name}“ gebunden.`, "ok");
+    setStatus(t("msg.bound", { n, name }), "ok");
   }).then(() => runApplyVariables());
 }
 
 function unbindColors() {
-  return queue("Farbbindung lösen", async () => {
+  return queue("act.unbind", async () => {
     const n = await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       const items = await loadEach(ctx, sel.shapes, (it) => {
@@ -384,11 +394,11 @@ function unbindColors() {
       await ctx.sync();
       return c;
     });
-    setStatus(n ? `${n} Farbbindung(en) gelöst.` : "Auswahl hat keine Farbbindungen.", "ok");
+    setStatus(n ? t("msg.unbound", { n }) : t("msg.noBindings"), "ok");
   });
 }
 
-// ---------------------------------------------------------------- Komponenten
+// ---------------------------------------------------------------- components
 
 async function readStyle(ctx, shape, type) {
   shape.load("width,height");
@@ -439,7 +449,7 @@ async function readStyle(ctx, shape, type) {
       autoSize: tf.autoSizeSetting,
     };
   } catch (e) {
-    console.warn("Textformat nicht lesbar", e);
+    console.warn("Text format not readable", e);
   }
   return st;
 }
@@ -497,21 +507,21 @@ function applyStyle(inst, st, comp) {
     }
     if (isSet(t.wordWrap)) tf.wordWrap = t.wordWrap;
   }
-  // Eigene Farben der Instanz gewinnen gegen den Master
+  // The instance's own colors win over the master
   if (ovr.fill) sh.fill.setSolidColor(ovr.fill);
   if (ovr.line) {
     sh.lineFormat.visible = true;
     sh.lineFormat.color = ovr.line;
   }
   if (ovr.font && inst.tr) inst.tr.font.color = ovr.font;
-  // Größe zuletzt, damit AutoSize sie nicht direkt wieder überschreibt
+  // Size last, so auto-size does not immediately override it
   if (comp.syncSize !== false) {
     if (isSet(st.width)) sh.width = st.width;
     if (isSet(st.height)) sh.height = st.height;
   }
 }
 
-/** Synchronisiert die angegebenen (oder alle) Komponenten. Gibt Statistik zurück. */
+/** Syncs the given (or all) components. Returns statistics. */
 async function syncComponents(ctx, names) {
   const all = await loadShapes(ctx);
   const result = { synced: 0, warnings: [] };
@@ -534,15 +544,15 @@ async function syncComponents(ctx, names) {
       comp.snapshot = st;
     } else if (comp.snapshot) {
       st = comp.snapshot;
-      result.warnings.push(`„${name}“: Master nicht gefunden – letzter bekannter Stand verwendet. Wähle eine Instanz und klicke „Zum Master machen“.`);
+      result.warnings.push(t("warn.masterSnapshot", { name: label(name) }));
     } else {
-      result.warnings.push(`„${name}“: Master nicht gefunden.`);
+      result.warnings.push(t("warn.masterMissing", { name: label(name) }));
       continue;
     }
 
     const targets = instances.filter((s) => COMP_TYPES.includes(s.type) || s.type === "Placeholder");
     const skipped = instances.length - targets.length;
-    if (skipped) result.warnings.push(`„${name}“: ${skipped} Instanz(en) mit nicht unterstütztem Typ übersprungen (Gruppe/Bild/Tabelle).`);
+    if (skipped) result.warnings.push(t("warn.skipped", { name: label(name), n: skipped }));
 
     const loaded = await loadEach(ctx, targets, (it) => {
       it.tpl = loadTag(it.shape, TAG.TPL);
@@ -556,14 +566,14 @@ async function syncComponents(ctx, names) {
       await ctx.sync();
       result.synced += loaded.length;
     } catch (e) {
-      // Einzeln wiederholen, um die fehlerhafte Instanz zu finden
+      // Retry one by one to find the failing instance
       for (const it of loaded) {
         try {
           applyStyle(it, st, comp);
           await ctx.sync();
           result.synced++;
         } catch (e2) {
-          result.warnings.push(`„${name}“ auf Folie ${it.slideIndex + 1}: ${errText(e2)}`);
+          result.warnings.push(t("warn.slide", { name: label(name), slide: it.slideIndex + 1, error: errText(e2) }));
         }
       }
     }
@@ -572,18 +582,18 @@ async function syncComponents(ctx, names) {
 }
 
 function runSync(names) {
-  return queue("Synchronisieren", async () => {
-    setStatus("Synchronisiere …");
+  return queue("act.sync", async () => {
+    setStatus(t("msg.syncing"));
     const r = await PowerPoint.run((ctx) => syncComponents(ctx, names));
     await saveState();
     renderComps();
-    const msg = `${r.synced} Instanz(en) synchronisiert.`;
+    const msg = t("msg.synced", { n: r.synced });
     setStatus(r.warnings.length ? msg + "\n" + r.warnings.join("\n") : msg, r.warnings.length ? "warn" : "ok");
   });
 }
 
 function refreshCompInfo() {
-  return queue("Komponenten zählen", async () => {
+  return queue("act.count", async () => {
     await PowerPoint.run(async (ctx) => {
       const all = await loadShapes(ctx);
       ui.compInfo = {};
@@ -601,9 +611,14 @@ function refreshCompInfo() {
   });
 }
 
+/** Display name: "Button" or "Button · Secondary". */
 const label = (key) => {
   const k = C.splitKey(key);
   return k.variant === C.DEFAULT_VARIANT ? k.base : k.base + " · " + k.variant;
+};
+const variantLabel = (key) => {
+  const v = C.splitKey(key).variant;
+  return v === C.DEFAULT_VARIANT ? t("variant.default") : v;
 };
 const variantsOf = (base) => Object.keys(state.components).filter((k) => C.splitKey(k).base === base).sort();
 
@@ -611,25 +626,25 @@ function shapeById(ctx, s) {
   return ctx.presentation.slides.getItem(s.slideId).shapes.getItem(s.id);
 }
 
-/** key = "Button" (neue Komponente) oder "Button / Sekundär" (Variante). */
+/** key = "Button" (new component) or "Button / Secondary" (variant). */
 function createComponent(key) {
   const parts = C.splitKey(key || "");
   if (!C.isValidName(parts.base) || !C.isValidName(parts.variant)) {
-    return setStatus("Ungültiger Name. Erlaubt: Buchstaben, Ziffern, Leerzeichen, _ . -", "err");
+    return setStatus(t("err.invalidName"), "err");
   }
   const name = C.joinKey(parts.base, parts.variant);
-  if (state.components[name]) return setStatus(`„${label(name)}“ existiert bereits.`, "err");
-  return queue("Komponente anlegen", async () => {
+  if (state.components[name]) return setStatus(t("err.exists", { name: label(name) }), "err");
+  return queue("act.create", async () => {
     await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
-      if (sel.shapes.length !== 1) throw new Error("Bitte genau eine Form markieren.");
+      if (sel.shapes.length !== 1) throw new Error(t("err.exactlyOne"));
       const s = sel.shapes[0];
       if (!COMP_TYPES.includes(s.type)) {
-        throw new Error(`Typ „${s.type}“ wird im Prototyp nicht unterstützt. Nur Formen und Textfelder.`);
+        throw new Error(t("err.typeUnsupported", { type: s.type }));
       }
       const existing = C.componentNameOf(s.name);
       if (existing && state.components[existing] && isMasterOf(s)) {
-        throw new Error(`Die Form ist schon Master von „${label(existing)}“.`);
+        throw new Error(t("err.alreadyMaster", { name: label(existing) }));
       }
       s.shape.name = C.componentShapeName(name);
       await ctx.sync();
@@ -642,8 +657,8 @@ function createComponent(key) {
     renderComps();
     setStatus(
       parts.variant === C.DEFAULT_VARIANT
-        ? `Komponente „${name}“ angelegt. Jetzt den Master kopieren und auf anderen Folien einfügen.`
-        : `Variante „${label(name)}“ angelegt. Instanzen können jetzt auf diese Variante umgestellt werden.`,
+        ? t("msg.compCreated", { name })
+        : t("msg.variantCreated", { name: label(name) }),
       "ok"
     );
   }).then(() => {
@@ -653,45 +668,45 @@ function createComponent(key) {
 }
 
 function linkSelection(name) {
-  return queue("Als Instanz verknüpfen", async () => {
+  return queue("act.link", async () => {
     const n = await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       const comp = state.components[name];
       const targets = sel.shapes.filter(
         (s) => !(s.slideId === comp.master.slideId && s.id === comp.master.shapeId)
       );
-      if (!targets.length) throw new Error("Bitte die Form(en) markieren, die Instanz werden sollen.");
+      if (!targets.length) throw new Error(t("err.selectTargets"));
       targets.forEach((s) => (s.shape.name = C.componentShapeName(name)));
       await ctx.sync();
       return targets.length;
     });
-    setStatus(`${n} Form(en) mit „${name}“ verknüpft.`, "ok");
+    setStatus(t("msg.linked", { n, name: label(name) }), "ok");
   }).then(() => runSync([name]).then(refreshSelection));
 }
 
 function detachSelection() {
-  return queue("Lösen", async () => {
+  return queue("act.detach", async () => {
     await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       sel.shapes.forEach((s) => {
         const comp = state.components[C.componentNameOf(s.name)];
         if (comp && comp.master.slideId === s.slideId && comp.master.shapeId === s.id) {
-          throw new Error("Der Master kann nicht gelöst werden. Komponente stattdessen löschen oder anderen Master wählen.");
+          throw new Error(t("err.detachMaster"));
         }
       });
       sel.shapes.forEach((s) => (s.shape.name = C.stripComponentName(s.name)));
       await ctx.sync();
     });
-    setStatus("Gelöst. Die Form wird nicht mehr synchronisiert.", "ok");
+    setStatus(t("msg.detached"), "ok");
   }).then(() => {
     refreshCompInfo();
     refreshSelection();
   });
 }
 
-/** Ändert die Überschreibungen (Tag DC_OVR) einer Form. */
+/** Changes a shape's overrides (tag DC_OVR). */
 function setOverride(s, key, mutate) {
-  return queue("Anpassung speichern", async () => {
+  return queue("act.override", async () => {
     await PowerPoint.run(async (ctx) => {
       const sh = shapeById(ctx, s);
       const t = loadTag(sh, TAG.OVR);
@@ -711,7 +726,7 @@ function setOverride(s, key, mutate) {
 }
 
 function switchVariant(s, newKey) {
-  return queue("Variante wechseln", async () => {
+  return queue("act.variant", async () => {
     await PowerPoint.run(async (ctx) => {
       shapeById(ctx, s).name = C.componentShapeName(newKey);
       await ctx.sync();
@@ -730,7 +745,7 @@ function makeMaster(name, s) {
 }
 
 function deleteComponent(name) {
-  return queue("Komponente löschen", async () => {
+  return queue("act.delete", async () => {
     await PowerPoint.run(async (ctx) => {
       const all = await loadShapes(ctx);
       all.filter((s) => C.componentNameOf(s.name) === name).forEach((s) => (s.shape.name = C.stripComponentName(s.name)));
@@ -740,13 +755,13 @@ function deleteComponent(name) {
     delete ui.compInfo[name];
     await saveState();
     renderComps();
-    setStatus(`Komponente „${name}“ gelöscht. Die Formen bleiben unverändert auf den Folien.`, "ok");
+    setStatus(t("msg.compDeleted", { name: label(name) }), "ok");
   });
 }
 
 function showMaster(name) {
   const m = state.components[name].master;
-  return queue("Master zeigen", async () => {
+  return queue("act.showMaster", async () => {
     await PowerPoint.run(async (ctx) => {
       ctx.presentation.setSelectedSlides([m.slideId]);
       await ctx.sync();
@@ -756,7 +771,7 @@ function showMaster(name) {
   });
 }
 
-// ---------------------------------------------------------------- Auswahl
+// ---------------------------------------------------------------- selection
 
 function isMasterOf(s) {
   const name = C.componentNameOf(s.name);
@@ -765,7 +780,7 @@ function isMasterOf(s) {
 }
 
 function refreshSelection() {
-  return queue("Auswahl lesen", async () => {
+  return queue("act.selection", async () => {
     let sel;
     try {
       sel = await PowerPoint.run(async (ctx) => {
@@ -782,15 +797,15 @@ function refreshSelection() {
         return sel;
       });
     } catch (e) {
-      // Auswahl lesen ist passiv – kein roter Fehler, nur Hinweis
-      console.warn("Auswahl nicht lesbar", e);
+      // Reading the selection is passive – show a hint, not a red error
+      console.warn("Selection not readable", e);
       sel = { slideId: null, shapes: [], unreadable: true };
     }
     ui.lastSelection = ui.selection;
     ui.selection = sel;
     renderSelection();
 
-    // Auto-Sync: Auswahl hat einen Master verlassen
+    // Auto-sync: the selection has left a master
     if ($("auto-sync").checked && ui.lastSelection) {
       const left = ui.lastSelection.shapes.filter(
         (p) => isMasterOf(p) && !sel.shapes.some((s) => s.slideId === p.slideId && s.id === p.id)
@@ -802,10 +817,10 @@ function refreshSelection() {
 }
 
 function compSelect() {
-  return el("select", { "aria-label": "Komponente" }, Object.keys(state.components).sort().map((n) => el("option", { value: n }, label(n))));
+  return el("select", { "aria-label": t("comp.select") }, Object.keys(state.components).sort().map((n) => el("option", { value: n }, label(n))));
 }
 
-/** Bereich „Überschreibungen“ (Instanz) bzw. „Standardwerte“ (Master). */
+/** "Overrides" box (instance) or "Defaults" box (master). */
 function renderOverrides(s, key, isMaster) {
   const comp = state.components[key];
   const snap = comp.snapshot || {};
@@ -813,19 +828,17 @@ function renderOverrides(s, key, isMaster) {
   const names = C.extractNames(src);
   const ovr = s.ovr || C.parseOverrides(null);
   const defaults = snap.defaults || {};
-  const box = el("div", { class: "ovr" }, el("h3", {}, isMaster ? "Standardwerte der Komponente" : "Anpassungen dieser Instanz"));
+  const box = el("div", { class: "ovr" }, el("h3", {}, isMaster ? t("ovr.defaults") : t("ovr.instance")));
 
-  if (!names.length) {
-    box.append(
-      el("p", { class: "hint" }, "Tipp: Schreib z. B. ", el("code", {}, "{{Label}}"), " in den Text des Masters und synchronisiere. Dann lässt sich der Text pro Instanz anpassen.")
-    );
-  }
+  if (!names.length) box.append(el("p", { class: "hint" }, rich(t("ovr.tip"))));
   for (const n of names) {
     const g = state.vars.find((v) => v.name === n && v.type !== "color");
     const fallback = isMaster ? (g ? g.value : "") : defaults[n] != null ? defaults[n] : g ? g.value : "";
-    const input = el("input", { type: "text", value: ovr.vars[n] || "", placeholder: fallback || "(leer)", "aria-label": n });
+    const input = el("input", { type: "text", value: ovr.vars[n] || "", placeholder: fallback || t("ovr.empty"), "aria-label": n });
     input.addEventListener("change", () => setOverride(s, key, (o) => (o.vars[n] = input.value)));
-    const src = isMaster ? (g ? "global: " + g.value : "nur in dieser Komponente") : ovr.vars[n] ? "eigener Wert" : defaults[n] != null ? "vom Master" : g ? "global" : "leer";
+    const src = isMaster
+      ? g ? t("ovr.src.global", { value: g.value }) : t("ovr.src.local")
+      : ovr.vars[n] ? t("ovr.src.own") : defaults[n] != null ? t("ovr.src.master") : g ? t("ovr.src.globalShort") : t("ovr.src.none");
     box.append(el("label", { class: "field" }, el("span", { class: "meta" }, "{{" + n + "}} · " + src), input));
   }
 
@@ -835,7 +848,7 @@ function renderOverrides(s, key, isMaster) {
       font: snap.text && snap.text.font && snap.text.font.color,
       line: snap.line && snap.line.color,
     };
-    for (const [k, lbl] of [["fill", "Füllung"], ["font", "Schriftfarbe"], ["line", "Linie"]]) {
+    for (const [k, lbl] of [["fill", t("ovr.fill")], ["font", t("ovr.font")], ["line", t("ovr.line")]]) {
       const own = !!ovr[k];
       const pick = el("input", { type: "color", value: ovr[k] || C.normalizeColor(masterColor[k]) || "#000000", "aria-label": lbl });
       pick.addEventListener("change", () => setOverride(s, key, (o) => (o[k] = pick.value)));
@@ -843,9 +856,9 @@ function renderOverrides(s, key, isMaster) {
         el(
           "div",
           { class: "row" },
-          el("span", { class: "meta grow" }, lbl + (own ? " · eigene Farbe" : " · vom Master")),
+          el("span", { class: "meta grow" }, lbl + " · " + (own ? t("ovr.ownColor") : t("ovr.fromMaster"))),
           pick,
-          el("button", { class: "small", disabled: !own, onclick: () => setOverride(s, key, (o) => (o[k] = null)) }, "Zurücksetzen")
+          el("button", { class: "small", disabled: !own, onclick: () => setOverride(s, key, (o) => (o[k] = null)) }, t("ovr.reset"))
         )
       );
     }
@@ -854,7 +867,7 @@ function renderOverrides(s, key, isMaster) {
         el("div", { class: "row" }, el("button", { onclick: () => setOverride(s, key, (o) => {
           o.vars = {};
           o.fill = o.font = o.line = null;
-        }) }, "Alle Anpassungen zurücksetzen"))
+        }) }, t("ovr.resetAll")))
       );
     }
   }
@@ -867,64 +880,62 @@ function renderSelection() {
   act.replaceChildren();
   const sel = ui.selection;
   if (!sel || !sel.shapes.length) {
-    info.textContent = sel && (sel.unreadable || sel.partial)
-      ? "Auswahl konnte nicht gelesen werden. Klicke einmal direkt auf eine Form auf der Folie."
-      : "Nichts ausgewählt.";
+    info.textContent = sel && (sel.unreadable || sel.partial) ? t("sel.unreadable") : t("sel.none");
     return;
   }
   const hasComps = Object.keys(state.components).length > 0;
   if (sel.shapes.length > 1) {
-    info.textContent = sel.shapes.length + " Formen ausgewählt.";
+    info.textContent = t("sel.multi", { n: sel.shapes.length });
     if (hasComps) {
       const s = compSelect();
-      act.append(el("div", { class: "row" }, s, el("button", { onclick: () => linkSelection(s.value) }, "Alle als Instanz verknüpfen")));
+      act.append(el("div", { class: "row" }, s, el("button", { onclick: () => linkSelection(s.value) }, t("sel.linkAll"))));
     }
-    act.append(el("div", { class: "row" }, el("button", { onclick: detachSelection }, "Alle lösen")));
+    act.append(el("div", { class: "row" }, el("button", { onclick: detachSelection }, t("sel.detachAll"))));
     return;
   }
   const s = sel.shapes[0];
   const cname = C.componentNameOf(s.name);
   const comp = cname && state.components[cname];
   if (comp && isMasterOf(s)) {
-    info.replaceChildren(el("b", {}, "Master"), " von „" + label(cname) + "“");
-    act.append(el("div", { class: "row" }, el("button", { class: "primary", onclick: () => runSync([cname]) }, "Instanzen aktualisieren")));
+    info.replaceChildren(el("b", {}, t("sel.masterOf", { name: label(cname) })));
+    act.append(el("div", { class: "row" }, el("button", { class: "primary", onclick: () => runSync([cname]) }, t("sel.updateInstances"))));
     act.append(renderOverrides(s, cname, true));
   } else if (comp) {
-    info.replaceChildren(el("b", {}, "Instanz"), " von „" + label(cname) + "“");
+    info.replaceChildren(el("b", {}, t("sel.instanceOf", { name: label(cname) })));
     act.append(
       el(
         "div",
         { class: "row" },
-        el("button", { onclick: () => showMaster(cname) }, "Master zeigen"),
-        el("button", { onclick: () => makeMaster(cname, s) }, "Zum Master machen"),
-        el("button", { onclick: detachSelection }, "Lösen")
+        el("button", { onclick: () => showMaster(cname) }, t("sel.showMaster")),
+        el("button", { onclick: () => makeMaster(cname, s) }, t("sel.makeMaster")),
+        el("button", { onclick: detachSelection }, t("sel.detach"))
       )
     );
     const variants = variantsOf(C.splitKey(cname).base);
     if (variants.length > 1) {
       const vs = el(
         "select",
-        { "aria-label": "Variante", onchange: () => switchVariant(s, vs.value) },
-        variants.map((k) => el("option", { value: k, selected: k === cname }, C.splitKey(k).variant))
+        { "aria-label": t("sel.variant"), onchange: () => switchVariant(s, vs.value) },
+        variants.map((k) => el("option", { value: k, selected: k === cname }, variantLabel(k)))
       );
-      act.append(el("div", { class: "row" }, el("span", { class: "meta" }, "Variante:"), vs));
+      act.append(el("div", { class: "row" }, el("span", { class: "meta" }, t("sel.variant")), vs));
     }
     act.append(renderOverrides(s, cname, false));
   } else if (cname) {
-    info.textContent = `„${s.name}“ – Komponente „${cname}“ ist in diesem Deck nicht registriert.`;
+    info.textContent = t("sel.unregistered", { shape: s.name, name: label(cname) });
     act.append(
-      el("div", { class: "row" }, el("button", { onclick: () => createComponent(cname) }, "Als Master registrieren"))
+      el("div", { class: "row" }, el("button", { onclick: () => createComponent(cname) }, t("sel.register")))
     );
   } else {
-    info.textContent = `„${s.name}“ (${s.type})`;
+    info.textContent = t("sel.plain", { shape: s.name, type: s.type });
     if (hasComps) {
       const sl = compSelect();
-      act.append(el("div", { class: "row" }, sl, el("button", { onclick: () => linkSelection(sl.value) }, "Als Instanz verknüpfen")));
+      act.append(el("div", { class: "row" }, sl, el("button", { onclick: () => linkSelection(sl.value) }, t("sel.link"))));
     }
   }
 }
 
-// ---------------------------------------------------------------- Rendering
+// ---------------------------------------------------------------- rendering
 
 function renderVars() {
   const list = $("var-list");
@@ -933,7 +944,7 @@ function renderVars() {
   state.vars.forEach((v, idx) => {
     const remove = el("button", {
       class: "small danger",
-      title: "Variable löschen",
+      title: t("vars.delete"),
       onclick: () => {
         state.vars.splice(idx, 1);
         saveState();
@@ -942,16 +953,16 @@ function renderVars() {
       },
     }, "✕");
 
-    const head = el("div", { class: "head" }, el("span", { class: "name" }, v.name), el("span", { class: "badge" }, v.type === "color" ? "Farbe" : "Text"), remove);
+    const head = el("div", { class: "head" }, el("span", { class: "name" }, v.name), el("span", { class: "badge" }, v.type === "color" ? t("vars.type.color") : t("vars.type.text")), remove);
 
     let value;
     let controls;
     if (v.type === "color") {
-      const hex = el("input", { type: "text", value: v.value || "", placeholder: "#RRGGBB", "aria-label": "Hex-Wert" });
-      const pick = el("input", { type: "color", value: C.normalizeColor(v.value) || "#000000", "aria-label": "Farbe wählen" });
+      const hex = el("input", { type: "text", value: v.value || "", placeholder: "#RRGGBB", "aria-label": t("vars.hex") });
+      const pick = el("input", { type: "color", value: C.normalizeColor(v.value) || "#000000", "aria-label": t("vars.pick") });
       const commit = (val) => {
         const c = C.normalizeColor(val);
-        if (!c) return setStatus("Ungültige Farbe: " + val, "err");
+        if (!c) return setStatus(t("err.invalidColor", { value: val }), "err");
         v.value = c;
         hex.value = c;
         pick.value = c;
@@ -964,14 +975,14 @@ function renderVars() {
       controls = el(
         "div",
         { class: "controls" },
-        el("span", { class: "meta" }, "Auswahl binden:"),
-        el("button", { class: "small", onclick: () => bindColor(v.name, "fill") }, "Füllung"),
-        el("button", { class: "small", onclick: () => bindColor(v.name, "line") }, "Linie"),
-        el("button", { class: "small", onclick: () => bindColor(v.name, "font") }, "Schrift"),
-        el("button", { class: "small", onclick: unbindColors, title: "Alle Farbbindungen der Auswahl lösen" }, "Lösen")
+        el("span", { class: "meta" }, t("vars.bindTo")),
+        el("button", { class: "small", onclick: () => bindColor(v.name, "fill") }, t("vars.bind.fill")),
+        el("button", { class: "small", onclick: () => bindColor(v.name, "line") }, t("vars.bind.line")),
+        el("button", { class: "small", onclick: () => bindColor(v.name, "font") }, t("vars.bind.font")),
+        el("button", { class: "small", onclick: unbindColors, title: t("vars.unbindTip") }, t("vars.unbind"))
       );
     } else {
-      const input = el("input", { type: "text", value: v.value || "", placeholder: "Wert", "aria-label": "Wert von " + v.name });
+      const input = el("input", { type: "text", value: v.value || "", placeholder: t("vars.valuePh"), "aria-label": t("vars.valueOf", { name: v.name }) });
       input.addEventListener("input", () => {
         v.value = input.value;
         saveState();
@@ -981,7 +992,7 @@ function renderVars() {
       controls = el(
         "div",
         { class: "controls" },
-        el("button", { class: "small", onclick: () => insertPlaceholder(v.name), title: "An der Cursorposition einfügen" }, "{{" + v.name + "}} einfügen")
+        el("button", { class: "small", onclick: () => insertPlaceholder(v.name), title: t("vars.insertTip") }, t("vars.insert", { name: v.name }))
       );
     }
     list.append(el("li", {}, head, value, controls));
@@ -993,11 +1004,11 @@ function renderComps() {
   list.replaceChildren();
   const names = Object.keys(state.components).sort();
   $("comp-empty").hidden = names.length > 0;
-  // Formular „Neue Komponente / Variante von …“
+  // Form "New component / Variant of …"
   const of = $("comp-of");
   const prev = of.value;
   const bases = [...new Set(names.map((k) => C.splitKey(k).base))];
-  of.replaceChildren(el("option", { value: "" }, "Neue Komponente"), ...bases.map((b) => el("option", { value: b }, "Variante von " + b)));
+  of.replaceChildren(el("option", { value: "" }, t("new.component")), ...bases.map((b) => el("option", { value: b }, t("new.variantOf", { name: b }))));
   of.value = bases.includes(prev) ? prev : "";
   for (const name of names) {
     const comp = state.components[name];
@@ -1005,8 +1016,10 @@ function renderComps() {
     let meta = "…";
     if (info) {
       meta = info.masterFound
-        ? `Master${info.masterSlide ? " auf Folie " + info.masterSlide : ""} · ${info.instances} Instanz(en)`
-        : `${info.instances} Instanz(en)`;
+        ? info.masterSlide
+          ? t("comps.masterOn", { slide: info.masterSlide, n: info.instances })
+          : t("comps.master", { n: info.instances })
+        : t("comps.instances", { n: info.instances });
     }
     const opt = (key, label) => {
       const cb = el("input", {
@@ -1028,15 +1041,15 @@ function renderComps() {
           "div",
           { class: "head" },
           el("span", { class: "name" }, "◆ " + label(name)),
-          info && !info.masterFound ? el("span", { class: "badge warn" }, "Master fehlt") : null
+          info && !info.masterFound ? el("span", { class: "badge warn" }, t("comps.masterMissing")) : null
         ),
         el("div", { class: "meta" }, meta),
-        el("div", { class: "controls" }, opt("syncText", "Text übernehmen"), opt("syncSize", "Größe übernehmen")),
+        el("div", { class: "controls" }, opt("syncText", t("comps.syncText")), opt("syncSize", t("comps.syncSize"))),
         el(
           "div",
           { class: "controls" },
-          el("button", { class: "small primary", onclick: () => runSync([name]) }, "Synchronisieren"),
-          el("button", { class: "small", onclick: () => showMaster(name), disabled: info && !info.masterFound }, "Master zeigen"),
+          el("button", { class: "small primary", onclick: () => runSync([name]) }, t("comps.sync")),
+          el("button", { class: "small", onclick: () => showMaster(name), disabled: info && !info.masterFound }, t("sel.showMaster")),
           el(
             "button",
             {
@@ -1057,7 +1070,7 @@ function renderComps() {
                 }
               },
             },
-            confirmDel ? "Wirklich löschen?" : "Löschen"
+            confirmDel ? t("comps.confirmDelete") : t("comps.delete")
           )
         )
       )
@@ -1081,11 +1094,43 @@ function switchTab(tab) {
   }
 }
 
-// ---------------------------------------------------------------- Start
+/** Applies the current language to all static texts (data-i18n attributes). */
+function applyStaticTexts() {
+  document.documentElement.lang = I.getLang();
+  document.querySelectorAll("[data-i18n]").forEach((n) => n.replaceChildren(rich(t(n.dataset.i18n))));
+  document.querySelectorAll("[data-i18n-ph]").forEach((n) => (n.placeholder = t(n.dataset.i18nPh)));
+  document.querySelectorAll("[data-i18n-aria]").forEach((n) => n.setAttribute("aria-label", t(n.dataset.i18nAria)));
+  document.querySelectorAll(".lang button").forEach((b) => b.classList.toggle("active", b.dataset.lang === I.getLang()));
+  updateCompNamePlaceholder();
+}
+
+function updateCompNamePlaceholder() {
+  $("comp-name").placeholder = $("comp-of").value ? t("new.variantPh") : t("new.namePh");
+}
+
+function setLanguage(lang) {
+  I.setLang(lang);
+  lsSet("dc.lang", lang);
+  applyStaticTexts();
+  renderVars();
+  renderComps();
+  setStatus(t("ready"));
+}
+
+function showVersion() {
+  const meta = document.querySelector('meta[name="dc-build"]');
+  const build = meta && !meta.content.startsWith("__") ? meta.content : "dev";
+  $("version").textContent = "v" + VERSION + " · " + build;
+}
+
+// ---------------------------------------------------------------- start
 
 Office.onReady((info) => {
+  I.setLang(I.detect(Office.context.displayLanguage, lsGet("dc.lang")));
+  applyStaticTexts();
+  showVersion();
   if (info.host !== Office.HostType.PowerPoint) {
-    setStatus("Dieses Add-in läuft nur in PowerPoint.", "err");
+    setStatus(t("hostOnly"), "err");
     return;
   }
   if (!Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) {
@@ -1098,14 +1143,14 @@ Office.onReady((info) => {
   $("var-add").addEventListener("submit", (e) => {
     e.preventDefault();
     const name = $("var-name").value.trim();
-    if (!C.isValidName(name)) return setStatus("Ungültiger Name. Erlaubt: Buchstaben, Ziffern, Leerzeichen, _ . -", "err");
-    if (state.vars.some((v) => v.name === name)) return setStatus(`„${name}“ existiert bereits.`, "err");
+    if (!C.isValidName(name)) return setStatus(t("err.invalidName"), "err");
+    if (state.vars.some((v) => v.name === name)) return setStatus(t("err.exists", { name }), "err");
     const type = $("var-type").value;
     state.vars.push({ name, type, value: type === "color" ? "#C43E1C" : "" });
     $("var-name").value = "";
     saveState();
     renderVars();
-    setStatus(type === "color" ? `Farbe „${name}“ angelegt. Formen markieren und binden.` : `Jetzt {{${name}}} in ein Textfeld schreiben oder über den Button einfügen.`, "ok");
+    setStatus(type === "color" ? t("msg.colorAdded", { name }) : t("msg.varAdded", { name }), "ok");
   });
 
   $("show-raw").checked = state.showRaw;
@@ -1123,9 +1168,8 @@ Office.onReady((info) => {
     const name = $("comp-name").value.trim();
     createComponent(base ? C.joinKey(base, name) : name);
   });
-  $("comp-of").addEventListener("change", () => {
-    $("comp-name").placeholder = $("comp-of").value ? "Variante, z. B. Sekundär" : "Name, z. B. Button";
-  });
+  $("comp-of").addEventListener("change", updateCompNamePlaceholder);
+  document.querySelectorAll(".lang button").forEach((b) => b.addEventListener("click", () => setLanguage(b.dataset.lang)));
   $("sync-all").addEventListener("click", () => runSync(null));
   $("refresh-comps").addEventListener("click", refreshCompInfo);
 
@@ -1137,5 +1181,5 @@ Office.onReady((info) => {
   renderVars();
   renderComps();
   switchTab(lsGet("dc.tab") === "comps" ? "comps" : "vars");
-  setStatus("Bereit.");
+  setStatus(t("ready"));
 });

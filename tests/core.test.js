@@ -3,109 +3,110 @@ const assert = require("node:assert/strict");
 const C = require("../addin/core.js");
 
 const vars = [
-  { name: "Kunde", type: "text", value: "ACME GmbH" },
-  { name: "Projekt", type: "text", value: "Relaunch" },
-  { name: "Jahr", type: "text", value: "2027" },
+  { name: "Client", type: "text", value: "ACME Ltd" },
+  { name: "Project", type: "text", value: "Relaunch" },
+  { name: "Year", type: "text", value: "2027" },
 ];
 
-test("render ersetzt bekannte Variablen und meldet unbekannte", () => {
-  const r = C.render("Für {{Kunde}} – {{ Projekt }} ({{Fehlt}})", vars);
-  assert.equal(r.text, "Für ACME GmbH – Relaunch ({{Fehlt}})");
-  assert.deepEqual(r.missing, ["Fehlt"]);
+test("render replaces known variables and reports unknown ones", () => {
+  const r = C.render("For {{Client}} – {{ Project }} ({{Missing}})", vars);
+  assert.equal(r.text, "For ACME Ltd – Relaunch ({{Missing}})");
+  assert.deepEqual(r.missing, ["Missing"]);
 });
 
 test("hasPlaceholders / extractNames", () => {
-  assert.equal(C.hasPlaceholders("ohne"), false);
-  assert.equal(C.hasPlaceholders("mit {{Kunde}}"), true);
-  assert.equal(C.hasPlaceholders("mit {{Kunde}}"), true); // lastIndex-Falle
+  assert.equal(C.hasPlaceholders("plain"), false);
+  assert.equal(C.hasPlaceholders("with {{Client}}"), true);
+  assert.equal(C.hasPlaceholders("with {{Client}}"), true); // no lastIndex trap
   assert.deepEqual(C.extractNames("{{a}} {{b}} {{a}}"), ["a", "b"]);
-  assert.deepEqual(C.extractNames("{{Größe}}"), ["Größe"]);
+  assert.deepEqual(C.extractNames("{{Größe}}"), ["Größe"]); // non-ASCII names
 });
 
-test("resolveTemplate: unveränderter Text behält Template", () => {
-  assert.equal(C.resolveTemplate("Hallo ACME GmbH", "Hallo {{Kunde}}", "Hallo ACME GmbH", vars), "Hallo {{Kunde}}");
-  // PowerPoint-Zeilenumbrüche
-  assert.equal(C.resolveTemplate("A\rACME GmbH", "A\n{{Kunde}}", "A\nACME GmbH", vars), "A\n{{Kunde}}");
+test("resolveTemplate: unchanged text keeps its template", () => {
+  assert.equal(C.resolveTemplate("Hello ACME Ltd", "Hello {{Client}}", "Hello ACME Ltd", vars), "Hello {{Client}}");
+  // PowerPoint line breaks
+  assert.equal(C.resolveTemplate("A\rACME Ltd", "A\n{{Client}}", "A\nACME Ltd", vars), "A\n{{Client}}");
 });
 
-test("resolveTemplate: Bearbeitung mit neuem Platzhalter behält alte Variablen", () => {
-  const t = C.resolveTemplate("Hallo ACME GmbH, {{Projekt}}", "Hallo {{Kunde}}", "Hallo ACME GmbH", vars);
-  assert.equal(t, "Hallo {{Kunde}}, {{Projekt}}");
+test("resolveTemplate: editing with a new placeholder keeps the old variables", () => {
+  const tpl = C.resolveTemplate("Hello ACME Ltd, {{Project}}", "Hello {{Client}}", "Hello ACME Ltd", vars);
+  assert.equal(tpl, "Hello {{Client}}, {{Project}}");
 });
 
-test("resolveTemplate: Bearbeitung ohne Werte -> keine Variablen mehr", () => {
-  assert.equal(C.resolveTemplate("Ganz neuer Text", "Hallo {{Kunde}}", "Hallo ACME GmbH", vars), null);
+test("resolveTemplate: text replaced without values -> no variables left", () => {
+  assert.equal(C.resolveTemplate("Completely new text", "Hello {{Client}}", "Hello ACME Ltd", vars), null);
 });
 
-test("resolveTemplate: Text bearbeitet, Wert noch drin -> Variable bleibt", () => {
-  assert.equal(C.resolveTemplate("Hi ACME GmbH!", "Hallo {{Kunde}}", "Hallo ACME GmbH", vars), "Hi {{Kunde}}!");
+test("resolveTemplate: edited text still contains the value -> variable stays", () => {
+  assert.equal(C.resolveTemplate("Hi ACME Ltd!", "Hello {{Client}}", "Hello ACME Ltd", vars), "Hi {{Client}}!");
 });
 
-test("resolveTemplate: neues Feld mit Platzhalter", () => {
-  assert.equal(C.resolveTemplate("{{Jahr}}", null, null, vars), "{{Jahr}}");
-  assert.equal(C.resolveTemplate("normal", null, null, vars), null);
+test("resolveTemplate: new text box with a placeholder", () => {
+  assert.equal(C.resolveTemplate("{{Year}}", null, null, vars), "{{Year}}");
+  assert.equal(C.resolveTemplate("plain", null, null, vars), null);
 });
 
-test("reabsorb ersetzt längere Werte zuerst und nicht doppelt", () => {
+test("resolveTemplate: edit AND new value at the same time", () => {
+  const now = [{ name: "Client", value: "Fabrikam" }];
+  assert.equal(C.resolveTemplate("New offer for Contoso", "Offer for {{Client}}", "Offer for Contoso", now), "New offer for {{Client}}");
+});
+
+test("reabsorb replaces longer values first and never twice", () => {
   const v = [
     { name: "A", value: "ACME" },
-    { name: "B", value: "ACME GmbH" },
+    { name: "B", value: "ACME Ltd" },
   ];
-  assert.equal(C.reabsorb("ACME GmbH und ACME", "{{A}} {{B}}", v), "{{B}} und {{A}}");
+  assert.equal(C.reabsorb("ACME Ltd and ACME", "{{A}} {{B}}", v), "{{B}} and {{A}}");
+});
+
+test("extractValues reads the values filled in at the time", () => {
+  assert.deepEqual(C.extractValues("Hello {{Client}} ({{Year}})", "Hello ACME (2026)"), [
+    { name: "Client", value: "ACME" },
+    { name: "Year", value: "2026" },
+  ]);
+  assert.equal(C.extractValues("Hello {{Client}}", "Bye ACME"), null);
+  assert.deepEqual(C.extractValues("a.b {{X}}\nz", "a.b 1+1\rz"), [{ name: "X", value: "1+1" }]);
 });
 
 test("normalizeColor", () => {
   assert.equal(C.normalizeColor("#abc"), "#AABBCC");
   assert.equal(C.normalizeColor("ff0000"), "#FF0000");
-  assert.equal(C.normalizeColor("rot"), null);
+  assert.equal(C.normalizeColor("red"), null);
 });
 
-test("Komponentennamen", () => {
+test("component shape names", () => {
   assert.equal(C.componentShapeName("Button"), "◆ Button ◆");
   assert.equal(C.componentNameOf("◆ Button ◆"), "Button");
-  assert.equal(C.componentNameOf("◆ Primär Button ◆ 2"), "Primär Button"); // PowerPoint-Suffix
-  assert.equal(C.componentNameOf("Rechteck 3"), null);
+  assert.equal(C.componentNameOf("◆ Primary Button ◆ 2"), "Primary Button"); // PowerPoint suffix
+  assert.equal(C.componentNameOf("Rectangle 3"), null);
   assert.equal(C.stripComponentName("◆ Button ◆"), "Button");
 });
 
 test("isValidName", () => {
-  assert.equal(C.isValidName("Kunde"), true);
-  assert.equal(C.isValidName("Kunde Name_2"), true);
+  assert.equal(C.isValidName("Client"), true);
+  assert.equal(C.isValidName("Client Name_2"), true);
   assert.equal(C.isValidName("a{b"), false);
   assert.equal(C.isValidName("  "), false);
 });
 
-test("extractValues liest damals eingesetzte Werte", () => {
-  assert.deepEqual(C.extractValues("Hallo {{Kunde}} ({{Jahr}})", "Hallo ACME (2026)"), [
-    { name: "Kunde", value: "ACME" },
-    { name: "Jahr", value: "2026" },
-  ]);
-  assert.equal(C.extractValues("Hallo {{Kunde}}", "Tschüss ACME"), null);
-  assert.deepEqual(C.extractValues("a.b {{X}}\nz", "a.b 1+1\rz"), [{ name: "X", value: "1+1" }]);
+test("variant keys", () => {
+  assert.deepEqual(C.splitKey("Button"), { base: "Button", variant: "Default" });
+  assert.deepEqual(C.splitKey("Button / Secondary"), { base: "Button", variant: "Secondary" });
+  assert.equal(C.joinKey("Button", "Default"), "Button");
+  assert.equal(C.joinKey("Button", "Standard"), "Button"); // legacy German default
+  assert.equal(C.joinKey("Button", "Red"), "Button / Red");
+  assert.equal(C.componentNameOf(C.componentShapeName("Button / Red") + " 2"), "Button / Red");
 });
 
-test("resolveTemplate: Bearbeitung UND neuer Wert gleichzeitig", () => {
-  const neu = [{ name: "Kunde", value: "Fabrikam" }];
-  assert.equal(C.resolveTemplate("Neues Angebot für Contoso", "Angebot für {{Kunde}}", "Angebot für Contoso", neu), "Neues Angebot für {{Kunde}}");
-});
-
-test("Varianten-Schlüssel", () => {
-  assert.deepEqual(C.splitKey("Button"), { base: "Button", variant: "Standard" });
-  assert.deepEqual(C.splitKey("Button / Sekundär"), { base: "Button", variant: "Sekundär" });
-  assert.equal(C.joinKey("Button", "Standard"), "Button");
-  assert.equal(C.joinKey("Button", "Rot"), "Button / Rot");
-  assert.equal(C.componentNameOf(C.componentShapeName("Button / Rot") + " 2"), "Button / Rot");
-});
-
-test("Überschreibungen", () => {
-  const o = C.parseOverrides('{"vars":{"Label":"Kaufen"},"fill":"#abc"}');
-  assert.deepEqual(o, { vars: { Label: "Kaufen" }, fill: "#AABBCC", font: null, line: null });
-  assert.deepEqual(C.parseOverrides("kaputt"), { vars: {}, fill: null, font: null, line: null });
+test("overrides", () => {
+  const o = C.parseOverrides('{"vars":{"Label":"Buy"},"fill":"#abc"}');
+  assert.deepEqual(o, { vars: { Label: "Buy" }, fill: "#AABBCC", font: null, line: null });
+  assert.deepEqual(C.parseOverrides("broken"), { vars: {}, fill: null, font: null, line: null });
   assert.equal(C.serializeOverrides({ vars: { Label: "" }, fill: null }), null);
   assert.equal(C.serializeOverrides({ vars: { Label: "X" }, font: "f00" }), '{"vars":{"Label":"X"},"font":"#FF0000"}');
 });
 
-test("mergeVars: Instanz > Master-Standard > global", () => {
-  const m = C.mergeVars([{ name: "Kunde", value: "ACME" }, { name: "Label", value: "g" }], { Label: "Standard" }, { Label: "Instanz", Kunde: "" });
-  assert.deepEqual(m, [{ name: "Kunde", value: "ACME" }, { name: "Label", value: "Instanz" }]);
+test("mergeVars: instance > master default > global", () => {
+  const m = C.mergeVars([{ name: "Client", value: "ACME" }, { name: "Label", value: "g" }], { Label: "Default" }, { Label: "Instance", Client: "" });
+  assert.deepEqual(m, [{ name: "Client", value: "ACME" }, { name: "Label", value: "Instance" }]);
 });
