@@ -5,7 +5,7 @@
 const C = DCCore;
 const I = DCI18n;
 const t = I.t;
-const VERSION = "0.5.2";
+const VERSION = "0.5.3";
 
 const STATE_KEY = "deckComponents.v1";
 const TEXT_TYPES = ["GeometricShape", "TextBox", "Placeholder"];
@@ -257,6 +257,25 @@ function lsSet(k, v) {
 
 /** Loads all shapes on the given slides (default: all), group contents excluded. */
 async function loadShapes(ctx, slideIds) {
+  if (slideIds && slideIds.length) {
+    try {
+      const picked = slideIds.map((id) => {
+        const sl = ctx.presentation.slides.getItemOrNullObject(id);
+        sl.load("id");
+        sl.shapes.load("items/id,items/name,items/type");
+        return sl;
+      });
+      await ctx.sync();
+      const out = [];
+      picked.forEach((sl) => {
+        if (sl.isNullObject) return;
+        sl.shapes.items.forEach((sh) => out.push({ slideId: sl.id, slideIndex: null, shape: sh, id: sh.id, name: sh.name, type: sh.type }));
+      });
+      return out;
+    } catch (e) {
+      /* fall back to the full slide list */
+    }
+  }
   const slides = ctx.presentation.slides;
   slides.load("items/id");
   await ctx.sync();
@@ -273,6 +292,15 @@ async function loadShapes(ctx, slideIds) {
   );
   return out;
 }
+
+/**
+ * Shapes whose text frame cannot be read (pictures, empty picture placeholders …).
+ * Remembered so later batches skip their text instead of failing and falling back
+ * to slow one-by-one loading on every click.
+ */
+const noText = new Set();
+const shapeKey = (s) => s.slideId + ":" + s.id;
+const wantsText = (s) => TEXT_TYPES.includes(s.type) && !noText.has(shapeKey(s));
 
 function loadTag(shape, key) {
   const tg = shape.tags.getItemOrNullObject(key);
@@ -300,6 +328,20 @@ async function loadEach(ctx, items, loader) {
         await ctx.sync();
         ok.push(it);
       } catch (e) {
+        // Retry without the text frame; if that works, remember the shape as text-less
+        const key = it.slideId != null ? shapeKey(it) : null;
+        if (key && TEXT_TYPES.includes(it.type) && !noText.has(key)) {
+          noText.add(key);
+          try {
+            loader(it);
+            await ctx.sync();
+            ok.push(it);
+            log("info", "“" + it.name + "” has no readable text – treated as a plain shape from now on");
+            continue;
+          } catch (_) {
+            noText.delete(key);
+          }
+        }
         log("warn", "skipped “" + it.name + "” (" + it.type + "): " + errText(e).split("\n")[0]);
       }
     }
@@ -341,6 +383,18 @@ async function writeEach(ctx, writers, what) {
  * so this falls back in stages instead of failing.
  */
 async function getSelection(ctx) {
+  // Fast path: slide + shapes in a single round trip
+  try {
+    const slides = ctx.presentation.getSelectedSlides();
+    slides.load("items/id");
+    const shapes = ctx.presentation.getSelectedShapes();
+    shapes.load("items/id,items/name,items/type");
+    await ctx.sync();
+    const sid = slides.items.length ? slides.items[0].id : null;
+    return { slideId: sid, shapes: shapes.items.map((sh) => ({ shape: sh, id: sh.id, name: sh.name, type: sh.type, slideId: sid })) };
+  } catch (e) {
+    /* fall through to the staged, more tolerant path */
+  }
   let slideId = null;
   try {
     const slides = ctx.presentation.getSelectedSlides();
@@ -362,12 +416,24 @@ async function getSelection(ctx) {
     console.warn("Selection stage 1 failed", e);
   }
 
-  // Stage 2: shape by shape, type optional
+  // Stage 2: shape by shape (first all at once by index, then one by one)
   const list = [];
   try {
     const shapes = ctx.presentation.getSelectedShapes();
     const count = shapes.getCount();
     await ctx.sync();
+    try {
+      const byIndex = [];
+      for (let i = 0; i < count.value; i++) {
+        const sh = shapes.getItemAt(i);
+        sh.load("id,name,type");
+        byIndex.push(sh);
+      }
+      await ctx.sync();
+      return { slideId, shapes: byIndex.map((sh) => wrap(sh, sh.type)), partial: true };
+    } catch (_) {
+      /* one of them is odd – read them one by one */
+    }
     for (let i = 0; i < count.value; i++) {
       try {
         const sh = shapes.getItemAt(i);
@@ -439,13 +505,14 @@ function effectiveVars(shapeName, ovr) {
 async function applyVariables(ctx, opts) {
   opts = opts || {};
   const skip = opts.skip || [];
-  const all = (await loadShapes(ctx, opts.slideIds)).filter(
+  const all = (opts.shapes || (await loadShapes(ctx, opts.slideIds))).filter(
     (s) => !skip.some((k) => k.slideId === s.slideId && k.id === s.id)
   );
   const items = await loadEach(ctx, all, (it) => {
     it.tags = {};
+    it.tr = null;
     for (const k of Object.values(TAG)) it.tags[k] = loadTag(it.shape, k);
-    if (TEXT_TYPES.includes(it.type)) {
+    if (wantsText(it)) {
       it.tr = it.shape.textFrame.textRange;
       it.tr.load("text");
     }
@@ -531,14 +598,6 @@ const applyVariablesSoon = debounce(() => queue("act.apply", async () => reportA
 
 const hasRenderables = () => state.vars.length > 0 || Object.keys(state.components).length > 0;
 
-/** Quiet re-render when the user leaves a text box and when the pane opens. */
-function autoRender(opts) {
-  if (!hasRenderables()) return Promise.resolve();
-  return queue("act.apply", async () => {
-    const r = await PowerPoint.run((ctx) => applyVariables(ctx, opts));
-    if (r.changed) reportApply(r, false);
-  });
-}
 
 /**
  * Automatic "push": reads the masters on the given slides (all slides if unknown),
@@ -548,41 +607,60 @@ function autoRender(opts) {
  * @param opts.slideIds  slides whose masters are checked (null = all)
  * @param opts.skip      masters to leave alone because they are still selected
  */
-function autoPush(opts) {
-  opts = opts || {};
-  const skip = opts.skip || [];
+async function autoPushIn(ctx, all, skip) {
   const candidates = Object.keys(state.components).filter((name) => {
     const m = state.components[name].master;
-    if (opts.slideIds && !opts.slideIds.includes(m.slideId)) return false;
     return !skip.some((k) => k.slideId === m.slideId && k.id === m.shapeId);
   });
-  if (!candidates.length) return Promise.resolve();
-  return queue("act.sync", async () => {
-    const r = await PowerPoint.run(async (ctx) => {
-      const all = await loadShapes(ctx, opts.slideIds);
-      const dirty = [];
-      for (const name of candidates) {
-        const comp = state.components[name];
-        const master = all.find((s) => s.slideId === comp.master.slideId && s.id === comp.master.shapeId);
-        if (!master) continue;
-        const st = await readStyle(ctx, master.shape, master.type);
-        if (JSON.stringify(st) !== JSON.stringify(comp.snapshot)) dirty.push(name);
-      }
-      log("info", "auto-push: checked " + candidates.length + " master(s), changed: " + (dirty.join(", ") || "none"));
-      return dirty.length ? syncComponents(ctx, dirty) : null;
-    });
-    if (!r) return;
-    await saveState();
-    renderComps();
-    if (r.warnings.length) setStatus(t("msg.synced", { n: r.synced }) + "\n" + r.warnings.join("\n"), "warn");
-    else if (r.synced) setStatus(t("msg.synced", { n: r.synced }), "ok");
-  });
+  const masters = [];
+  for (const name of candidates) {
+    const m = state.components[name].master;
+    const s = all.find((x) => x.slideId === m.slideId && x.id === m.shapeId);
+    if (s) masters.push(Object.assign({ comp: name }, s));
+  }
+  if (!masters.length) return null;
+  // All masters in one round trip
+  const loaded = await loadEach(ctx, masters, (it) => (it.h = queueStyle(it.shape, wantsText(it))));
+  const dirty = loaded
+    .filter((it) => JSON.stringify(buildStyle(it.h)) !== JSON.stringify(state.components[it.comp].snapshot))
+    .map((it) => it.comp);
+  log("info", "auto-push: checked " + loaded.length + " master(s), changed: " + (dirty.join(", ") || "none"));
+  return dirty.length ? syncComponents(ctx, dirty) : null;
 }
 
-/** Everything that should happen automatically after the user clicks somewhere. */
+/**
+ * Automatic update after a click: push changed masters, then fill in placeholders.
+ * Calls arriving while one is waiting are merged into it, so fast clicking does
+ * not pile up work. Everything runs in one PowerPoint.run to save round trips.
+ */
+let pendingUpdate = null;
 function autoUpdate(slideIds, skip) {
-  if (ui.autoSync) autoPush({ slideIds, skip });
-  return autoRender({ slideIds, skip });
+  if (!hasRenderables()) return Promise.resolve();
+  if (pendingUpdate) {
+    // merge: unknown slides (null) win, otherwise union
+    pendingUpdate.slideIds = pendingUpdate.slideIds && slideIds ? [...new Set([...pendingUpdate.slideIds, ...slideIds])] : null;
+    pendingUpdate.skip = skip;
+    return pendingUpdate.promise;
+  }
+  pendingUpdate = { slideIds, skip };
+  pendingUpdate.promise = queue("act.apply", async () => {
+    const job = pendingUpdate;
+    pendingUpdate = null;
+    const res = await PowerPoint.run(async (ctx) => {
+      const all = await loadShapes(ctx, job.slideIds);
+      const pushed = ui.autoSync && Object.keys(state.components).length ? await autoPushIn(ctx, all, job.skip) : null;
+      const rendered = await applyVariables(ctx, { shapes: all, slideIds: job.slideIds, skip: job.skip });
+      return { pushed, rendered };
+    });
+    if (res.pushed) {
+      await saveState();
+      renderComps();
+      if (res.pushed.warnings.length) setStatus(t("msg.synced", { n: res.pushed.synced }) + "\n" + res.pushed.warnings.join("\n"), "warn");
+      else if (res.pushed.synced) setStatus(t("msg.synced", { n: res.pushed.synced }), "ok");
+    }
+    if (res.rendered.changed || res.rendered.failed) reportApply(res.rendered, false);
+  });
+  return pendingUpdate.promise;
 }
 
 function scanPlaceholders() {
@@ -671,11 +749,26 @@ function unbindColors() {
 
 // ================================================================ components
 
-async function readStyle(ctx, shape, type) {
+/** Queues the loads needed to snapshot a master's style. Call buildStyle after ctx.sync(). */
+function queueStyle(shape, withText) {
   shape.load("width,height");
   shape.fill.load("type,foregroundColor,transparency");
   shape.lineFormat.load("visible,color,weight,dashStyle");
-  await ctx.sync();
+  const h = { shape, text: null };
+  if (withText) {
+    const tf = shape.textFrame;
+    const tr = tf.textRange;
+    tr.load("text");
+    tr.font.load("name,size,bold,italic,underline,color");
+    tr.paragraphFormat.load("horizontalAlignment");
+    tf.load("verticalAlignment,leftMargin,rightMargin,topMargin,bottomMargin,wordWrap,autoSizeSetting");
+    h.text = { tf, tr, tpl: loadTag(shape, TAG.TPL), out: loadTag(shape, TAG.OUT), ovr: loadTag(shape, TAG.OVR) };
+  }
+  return h;
+}
+
+function buildStyle(h) {
+  const shape = h.shape;
   const st = {
     width: shape.width,
     height: shape.height,
@@ -688,41 +781,44 @@ async function readStyle(ctx, shape, type) {
     },
     text: null,
   };
-  if (!TEXT_TYPES.includes(type)) return st;
-  try {
-    const tf = shape.textFrame;
-    const tr = tf.textRange;
-    tr.load("text");
-    tr.font.load("name,size,bold,italic,underline,color");
-    tr.paragraphFormat.load("horizontalAlignment");
-    tf.load("verticalAlignment,leftMargin,rightMargin,topMargin,bottomMargin,wordWrap,autoSizeSetting");
-    const tpl = loadTag(shape, TAG.TPL);
-    const out = loadTag(shape, TAG.OUT);
-    const ovr = loadTag(shape, TAG.OVR);
-    await ctx.sync();
-    st.defaults = C.parseOverrides(tagVal(ovr)).vars;
-    const vars = C.mergeVars(textVars(), st.defaults);
-    const source = C.resolveTemplate(tr.text, tagVal(tpl), tagVal(out), vars) || tr.text;
-    st.text = {
-      source,
-      font: {
-        name: tr.font.name,
-        size: tr.font.size,
-        bold: tr.font.bold,
-        italic: tr.font.italic,
-        underline: tr.font.underline,
-        color: tr.font.color,
-      },
-      hAlign: tr.paragraphFormat.horizontalAlignment,
-      vAlign: tf.verticalAlignment,
-      margins: [tf.leftMargin, tf.rightMargin, tf.topMargin, tf.bottomMargin],
-      wordWrap: tf.wordWrap,
-      autoSize: tf.autoSizeSetting,
-    };
-  } catch (e) {
-    console.warn("Text format not readable", e);
-  }
+  if (!h.text) return st;
+  const { tf, tr, tpl, out, ovr } = h.text;
+  st.defaults = C.parseOverrides(tagVal(ovr)).vars;
+  const vars = C.mergeVars(textVars(), st.defaults);
+  const source = C.resolveTemplate(tr.text, tagVal(tpl), tagVal(out), vars) || tr.text;
+  st.text = {
+    source,
+    font: {
+      name: tr.font.name,
+      size: tr.font.size,
+      bold: tr.font.bold,
+      italic: tr.font.italic,
+      underline: tr.font.underline,
+      color: tr.font.color,
+    },
+    hAlign: tr.paragraphFormat.horizontalAlignment,
+    vAlign: tf.verticalAlignment,
+    margins: [tf.leftMargin, tf.rightMargin, tf.topMargin, tf.bottomMargin],
+    wordWrap: tf.wordWrap,
+    autoSize: tf.autoSizeSetting,
+  };
   return st;
+}
+
+/** Snapshot of one shape's style (one round trip; text is optional if unreadable). */
+async function readStyle(ctx, shape, type) {
+  if (TEXT_TYPES.includes(type)) {
+    try {
+      const h = queueStyle(shape, true);
+      await ctx.sync();
+      return buildStyle(h);
+    } catch (e) {
+      log("warn", "text format not readable: " + errText(e).split("\n")[0]);
+    }
+  }
+  const h = queueStyle(shape, false);
+  await ctx.sync();
+  return buildStyle(h);
 }
 
 const isSet = (v) => v !== null && v !== undefined;
@@ -1022,13 +1118,28 @@ function isMasterOf(s) {
 
 const selSignature = (sel) => (sel ? sel.shapes.map((s) => s.slideId + ":" + s.id).join(",") : "");
 
+let selectionQueued = false;
+/** Selection events arrive in bursts (even when only the cursor moves): read once per burst. */
+function onSelectionChanged() {
+  if (selectionQueued) return;
+  refreshSelection();
+}
+
 function refreshSelection() {
+  selectionQueued = true;
   return queue("act.selection", async () => {
+    selectionQueued = false;
     let sel;
     try {
       sel = await PowerPoint.run(async (ctx) => {
         const sel = await getSelection(ctx);
-        if (sel.shapes.length === 1) {
+        const one = sel.shapes.length === 1 ? sel.shapes[0] : null;
+        const prevOne = ui.selection && ui.selection.shapes.length === 1 ? ui.selection.shapes[0] : null;
+        if (one && !state.components[C.componentNameOf(one.name)]) {
+          one.ovr = C.parseOverrides(null); // not a component: nothing to read
+        } else if (one && prevOne && prevOne.ovr && shapeKey(prevOne) === shapeKey(one) && prevOne.name === one.name) {
+          one.ovr = prevOne.ovr; // same shape as before (cursor moved): reuse
+        } else if (one) {
           try {
             const tg = loadTag(sel.shapes[0].shape, TAG.OVR);
             await ctx.sync();
@@ -1058,8 +1169,10 @@ function refreshSelection() {
     // still be typing in them). If the slides are unknown – PowerPoint on the web
     // sometimes cannot report the selection – the whole deck is checked.
     const prev = ui.lastSelection;
-    const known = [prev && prev.slideId, sel.slideId].filter(Boolean);
     const unsure = (x) => !x || x.unreadable || x.partial;
+    // Still in the same shape (e.g. only the text cursor moved): nothing to update
+    if (!unsure(sel) && !unsure(prev) && selSignature(sel) === selSignature(prev)) return;
+    const known = [prev && prev.slideId, sel.slideId].filter(Boolean);
     const slideIds = known.length && !unsure(sel) && !unsure(prev) ? [...new Set(known)] : null;
     autoUpdate(slideIds, sel.shapes);
   });
@@ -1698,7 +1811,7 @@ Office.onReady((info) => {
   $("status-close").addEventListener("click", () => $("status").classList.remove("show"));
   mountToolbarMenus();
 
-  Office.context.document.addHandlerAsync(Office.EventType.DocumentSelectionChanged, debounce(refreshSelection, 250));
+  Office.context.document.addHandlerAsync(Office.EventType.DocumentSelectionChanged, debounce(onSelectionChanged, 300));
 
   renderVars();
   renderComps();

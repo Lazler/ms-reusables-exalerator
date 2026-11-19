@@ -33,6 +33,7 @@
   const ctx = {
     presentation: {
       slides: { get items(){ return slides.map(s => ({ id: s.id, shapes: coll(s.shapes), setSelectedShapes(ids){ selection = { slide: slides.indexOf(s), shapes: ids }; } })); }, load(){},
+        getItemOrNullObject(id){ const s = slides.find(x=>x.id===id); if (!s) return { isNullObject: true, load(){}, shapes: { load(){}, items: [] } }; return { isNullObject: false, id: s.id, load(){}, shapes: coll(s.shapes) }; },
         getItem(id){ const s = slides.find(x=>x.id===id); return { setSelectedShapes(ids){ selection = { slide: slides.indexOf(s), shapes: ids }; },
           shapes: { getItem(sid){ const sh = s.shapes.find(x => x.id === String(sid)); if (!sh) throw new Error("ItemNotFound"); return sh; } } }; } },
       getSelectedShapes(){ if (window.__selFail > 0) { window.__selFail--; window.__pendingError = true; } const s = slides[selection.slide]; return coll(s.shapes.filter(x => selection.shapes.includes(x.id))); },
@@ -40,7 +41,7 @@
       getSelectedTextRangeOrNullObject(){ const s = slides[selection.slide].shapes.find(x => selection.shapes.includes(x.id)); if(!s) return { isNullObject:true }; const tr = s.textFrame.textRange; return { isNullObject:false, set text(v){ tr.text += v; } }; },
       setSelectedSlides(ids){ selection = { slide: slides.findIndex(s=>s.id===ids[0]), shapes: [] }; },
     },
-    async sync(){ if (window.__pendingError){ window.__pendingError=false; throw Object.assign(new Error("GeneralException"),{code:"GeneralException",debugInfo:{errorLocation:"ShapeScopedCollection.getItem"}}); } },
+    async sync(){ window.__syncs = (window.__syncs || 0) + 1; if (window.__pendingError){ window.__pendingError=false; throw Object.assign(new Error("GeneralException"),{code:"GeneralException",debugInfo:{errorLocation:"ShapeScopedCollection.getItem"}}); } },
   };
   const handlers = [];
   window.__pp = { slides, mkShape, select(slide, ids){ selection = { slide, shapes: ids.map(String) }; handlers.forEach(h=>h()); } };
