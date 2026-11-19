@@ -238,6 +238,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .menu-sep { height: 1px; background: var(--line); margin: 4px 2px; }
 .menu-heading { font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--fg-3); padding: 6px 8px 2px; }
 
+/* ---------- dialog (diagnostics) ---------- */
+.overlay { position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, .35); display: flex; align-items: flex-start; justify-content: center; padding: 16px 10px; }
+.dialog { background: var(--bg); border-radius: 10px; box-shadow: var(--shadow); width: 100%; max-height: calc(100vh - 32px); display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.dialog-head { display: flex; align-items: center; justify-content: space-between; }
+.dialog .hint { margin: 0; }
+.diag-log {
+  flex: 1; min-height: 160px; overflow: auto; margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-soft); font-family: var(--mono); font-size: 10.5px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.dialog-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+
 /* ---------- notices, toast, footer ---------- */
 .notice { margin: 10px; padding: 8px 10px; border-radius: var(--radius); background: var(--accent-soft); color: var(--err); font-size: 12.5px; }
 .bottombar {

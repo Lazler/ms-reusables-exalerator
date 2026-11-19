@@ -5,7 +5,7 @@
 const C = DCCore;
 const I = DCI18n;
 const t = I.t;
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 
 const STATE_KEY = "deckComponents.v1";
 const TEXT_TYPES = ["GeometricShape", "TextBox", "Placeholder"];
@@ -172,11 +172,40 @@ function debounce(fn, ms) {
   };
 }
 
-/** Runs all PowerPoint calls one after another and reports errors. */
+// ---------------------------------------------------------------- diagnostics log
+
+const LOG = [];
+/** Keeps the last 100 events for the Diagnostics view. */
+function log(kind, msg) {
+  const d = new Date();
+  const time = d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0");
+  LOG.push(time + "  " + kind.padEnd(5) + " " + msg);
+  if (LOG.length > 100) LOG.shift();
+  if (kind === "ERR") console.warn(msg); // shown in Diagnostics; not a script error
+}
+
+const QUEUE_TIMEOUT_MS = 20000;
+/**
+ * Runs all PowerPoint calls one after another and reports errors.
+ * A call that never returns is abandoned after 20 s so later updates still run.
+ */
 let chain = Promise.resolve();
 function queue(label, fn) {
-  const p = chain.then(fn).catch((e) => {
-    console.error(label, e);
+  const run = () => {
+    const started = Date.now();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(t("err.timeout"))), QUEUE_TIMEOUT_MS);
+    });
+    return Promise.race([Promise.resolve().then(fn), timeout])
+      .then((v) => {
+        log("ok", label + " (" + (Date.now() - started) + " ms)");
+        return v;
+      })
+      .finally(() => clearTimeout(timer));
+  };
+  const p = chain.then(run).catch((e) => {
+    log("ERR", label + ": " + errText(e).replace(/\n/g, " | "));
     setStatus(t("err.during", { action: t(label) }) + ": " + errText(e), "err");
   });
   chain = p;
@@ -262,7 +291,8 @@ async function loadEach(ctx, items, loader) {
   try {
     await ctx.sync();
     return items;
-  } catch (_) {
+  } catch (batchError) {
+    log("warn", "batch load failed (" + errText(batchError).split("\n")[0] + "), loading one by one");
     const ok = [];
     for (const it of items) {
       try {
@@ -270,10 +300,38 @@ async function loadEach(ctx, items, loader) {
         await ctx.sync();
         ok.push(it);
       } catch (e) {
-        console.warn("Skipped:", it.name, e);
+        log("warn", "skipped “" + it.name + "” (" + it.type + "): " + errText(e).split("\n")[0]);
       }
     }
     return ok;
+  }
+}
+
+/**
+ * Applies queued writes for many items in one sync. If that fails, it retries
+ * item by item so a single problematic shape does not block all others.
+ * @param writers  array of { name, write: () => void }
+ * @returns number of items that could not be written
+ */
+async function writeEach(ctx, writers, what) {
+  if (!writers.length) return 0;
+  writers.forEach((w) => w.write());
+  try {
+    await ctx.sync();
+    return 0;
+  } catch (batchError) {
+    log("warn", what + ": batch write failed (" + errText(batchError).split("\n")[0] + "), writing one by one");
+    let failed = 0;
+    for (const w of writers) {
+      try {
+        w.write();
+        await ctx.sync();
+      } catch (e) {
+        failed++;
+        log("ERR", what + ": could not write “" + w.name + "”: " + errText(e).split("\n")[0]);
+      }
+    }
+    return failed;
   }
 }
 
@@ -396,48 +454,67 @@ async function applyVariables(ctx, opts) {
   const missing = new Set();
   let changed = 0;
   let fields = 0;
+  let detached = 0;
+  const writers = [];
 
   for (const it of items) {
     const ovr = C.parseOverrides(tagVal(it.tags[TAG.OVR]));
     const vars = effectiveVars(it.name, ovr);
     const local = componentPlaceholders(it.name);
+    const ops = [];
     if (it.tr) {
       const current = it.tr.text;
       const oldTpl = tagVal(it.tags[TAG.TPL]);
-      const tpl = C.resolveTemplate(current, oldTpl, tagVal(it.tags[TAG.OUT]), vars);
+      const oldOut = tagVal(it.tags[TAG.OUT]);
+      const tpl = C.resolveTemplate(current, oldTpl, oldOut, vars);
       if (tpl) {
         fields++;
         const r = C.render(tpl, vars);
         r.missing.filter((m) => !local.includes(m)).forEach((m) => missing.add(m));
         const out = state.showRaw ? tpl : r.text;
         if (!C.sameText(out, current)) {
-          it.tr.text = out;
+          ops.push(() => (it.tr.text = out));
           changed++;
         }
-        it.shape.tags.add(TAG.TPL, tpl);
-        it.shape.tags.add(TAG.OUT, out);
+        if (tpl !== oldTpl) ops.push(() => it.shape.tags.add(TAG.TPL, tpl));
+        if (out !== oldOut) ops.push(() => it.shape.tags.add(TAG.OUT, out));
       } else if (oldTpl != null) {
-        it.shape.tags.delete(TAG.TPL);
-        if (tagVal(it.tags[TAG.OUT]) != null) it.shape.tags.delete(TAG.OUT);
+        // The text no longer contains the variable's value: the user replaced it.
+        detached++;
+        log("info", "“" + it.name + "” was edited by hand – no longer linked to " + C.extractNames(oldTpl).map((n) => "{{" + n + "}}").join(", "));
+        ops.push(() => it.shape.tags.delete(TAG.TPL));
+        if (oldOut != null) ops.push(() => it.shape.tags.delete(TAG.OUT));
       }
     }
     // Colors: instance override > color variable
     const fill = ovr.fill || colorOf(tagVal(it.tags[TAG.FILL]));
-    if (fill) it.shape.fill.setSolidColor(fill);
+    if (fill) ops.push(() => it.shape.fill.setSolidColor(fill));
     const line = ovr.line || colorOf(tagVal(it.tags[TAG.LINE]));
     if (line) {
-      it.shape.lineFormat.visible = true;
-      it.shape.lineFormat.color = line;
+      ops.push(() => {
+        it.shape.lineFormat.visible = true;
+        it.shape.lineFormat.color = line;
+      });
     }
     const font = ovr.font || colorOf(tagVal(it.tags[TAG.FONT]));
-    if (font && it.tr) it.tr.font.color = font;
+    if (font && it.tr) ops.push(() => (it.tr.font.color = font));
+    if (ops.length) writers.push({ name: it.name, write: () => ops.forEach((op) => op()) });
   }
-  await ctx.sync();
-  return { changed, fields, missing: [...missing] };
+  const failed = await writeEach(ctx, writers, "update");
+  log(
+    "info",
+    "update: " + all.length + " shape(s) on " + (opts.slideIds ? opts.slideIds.length + " slide(s)" : "all slides") +
+      ", " + (all.length - items.length) + " unreadable, " + fields + " with variables, " + changed + " changed" +
+      (failed ? ", " + failed + " failed" : "") + (detached ? ", " + detached + " unlinked" : "") +
+      (missing.size ? ", missing: " + [...missing].join(", ") : "")
+  );
+  return { changed, fields, missing: [...missing], failed };
 }
 
 function reportApply(r, always) {
-  if (r.missing.length) {
+  if (r.failed) {
+    setStatus(t("msg.applyFailed", { n: r.failed }), "err");
+  } else if (r.missing.length) {
     setStatus(t("msg.missing", { names: r.missing.join(", ") }), "warn");
   } else if (always || r.changed) {
     setStatus(t("msg.applied", { fields: r.fields, changed: r.changed }) + (state.showRaw ? " " + t("msg.rawView") : ""), "ok");
@@ -491,6 +568,7 @@ function autoPush(opts) {
         const st = await readStyle(ctx, master.shape, master.type);
         if (JSON.stringify(st) !== JSON.stringify(comp.snapshot)) dirty.push(name);
       }
+      log("info", "auto-push: checked " + candidates.length + " master(s), changed: " + (dirty.join(", ") || "none"));
       return dirty.length ? syncComponents(ctx, dirty) : null;
     });
     if (!r) return;
@@ -759,22 +837,14 @@ async function syncComponents(ctx, names) {
       it.tr = st.text ? it.shape.textFrame.textRange : null;
     });
 
-    loaded.forEach((it) => applyStyle(it, st, comp));
-    try {
-      await ctx.sync();
-      result.synced += loaded.length;
-    } catch (e) {
-      // Retry one by one to find the failing instance
-      for (const it of loaded) {
-        try {
-          applyStyle(it, st, comp);
-          await ctx.sync();
-          result.synced++;
-        } catch (e2) {
-          result.warnings.push(t("warn.slide", { name: label(name), slide: it.slideIndex + 1, error: errText(e2) }));
-        }
-      }
-    }
+    const failed = await writeEach(
+      ctx,
+      loaded.map((it) => ({ name: it.name + " (slide " + (it.slideIndex + 1) + ")", write: () => applyStyle(it, st, comp) })),
+      "push " + name
+    );
+    result.synced += loaded.length - failed;
+    if (failed) result.warnings.push(t("warn.failed", { name: label(name), n: failed }));
+    log("info", "push “" + name + "”: master " + (master ? "slide " + (master.slideIndex + 1) : "missing") + ", " + loaded.length + " instance(s), " + failed + " failed");
   }
   return result;
 }
@@ -974,6 +1044,7 @@ function refreshSelection() {
       console.warn("Selection not readable", e);
       sel = { slideId: null, shapes: [], unreadable: true };
     }
+    log("info", "selection: " + (sel.unreadable ? "unreadable" : sel.shapes.length + " shape(s)" + (sel.partial ? " (partial)" : "") + (sel.slideId ? "" : ", slide unknown")));
     ui.lastSelection = ui.selection;
     ui.selection = sel;
     if (selSignature(sel) !== ui.inspectorFor) {
@@ -1466,6 +1537,75 @@ function showVersion() {
   $("version").textContent = "v" + VERSION + " · " + build;
 }
 
+function diagnosticsText() {
+  const d = (Office.context && Office.context.diagnostics) || {};
+  const req = (v) => {
+    try {
+      return Office.context.requirements.isSetSupported("PowerPointApi", v) ? "yes" : "no";
+    } catch (_) {
+      return "?";
+    }
+  };
+  const sel = ui.selection;
+  return [
+    "Deck Components " + $("version").textContent,
+    "Office: " + (d.host || "?") + " · " + (d.platform || "?") + " · " + (d.version || "?") + " · " + (Office.context.displayLanguage || "?"),
+    "PowerPointApi 1.3: " + req("1.3") + " · 1.4: " + req("1.4") + " · 1.5: " + req("1.5") + " · 1.8: " + req("1.8"),
+    "Variables: " + state.vars.map((v) => v.name + "=" + JSON.stringify(v.value)).join(", "),
+    "Components: " + (Object.keys(state.components).join(", ") || "none"),
+    "Placeholder view: " + state.showRaw + " · auto-update instances: " + ui.autoSync,
+    "Selection: " + (sel ? (sel.unreadable ? "unreadable" : sel.shapes.map((s) => s.name + " [" + s.type + "]").join(", ") || "nothing") : "not read yet"),
+    "",
+    "Recent events (newest last):",
+    ...LOG,
+  ].join("\n");
+}
+
+function openDiagnostics() {
+  const close = () => overlay.remove();
+  const pre = el("pre", { class: "diag-log", id: "diag-log", tabindex: "0" }, diagnosticsText());
+  const overlay = el(
+    "div",
+    { class: "overlay", id: "diag", onclick: (e) => e.target === overlay && close() },
+    el(
+      "div",
+      { class: "dialog", role: "dialog", "aria-label": t("diag.title") },
+      el("div", { class: "dialog-head" }, el("strong", {}, t("diag.title")), iconButton("close", t("ui.close"), close)),
+      el("p", { class: "hint" }, t("diag.hint")),
+      pre,
+      el(
+        "div",
+        { class: "dialog-actions" },
+        el("button", { type: "button", class: "btn sm", onclick: () => { pre.textContent = diagnosticsText(); } }, t("diag.refresh")),
+        el("button", { type: "button", class: "btn sm", onclick: runApplyVariables }, t("vars.apply")),
+        el(
+          "button",
+          {
+            type: "button",
+            class: "btn primary sm",
+            onclick: () => {
+              const range = document.createRange();
+              range.selectNodeContents(pre);
+              const s = window.getSelection();
+              s.removeAllRanges();
+              s.addRange(range);
+              let ok = false;
+              try {
+                ok = document.execCommand("copy");
+              } catch (_) {
+                ok = false;
+              }
+              setStatus(ok ? t("diag.copied") : t("diag.copyManual"), "ok");
+            },
+          },
+          t("diag.copy")
+        )
+      )
+    )
+  );
+  document.body.append(overlay);
+}
+
 function mountToolbarMenus() {
   $("settings-slot").replaceChildren(
     menuButton(
@@ -1492,6 +1632,8 @@ function mountToolbarMenus() {
             lsSet("dc.autoSync", ui.autoSync ? "1" : "0");
           },
         },
+        "sep",
+        { label: t("diag.title"), onclick: openDiagnostics },
       ],
       { icon: "gear", title: t("settings.title") }
     )
@@ -1547,6 +1689,7 @@ Office.onReady((info) => {
   }
   if (!Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) $("unsupported").hidden = false;
   loadState();
+  log("info", "pane opened, " + state.vars.length + " variable(s), " + Object.keys(state.components).length + " component(s)");
   ui.autoSync = lsGet("dc.autoSync") !== "0"; // on unless the user turned it off
 
   document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));

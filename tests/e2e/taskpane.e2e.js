@@ -197,6 +197,30 @@ const root = path.join(__dirname, "..", "..", "addin");
   await select(0, [2]); await wait(600); // leave the box
   check((await shape(0, 30)).text === "Hi Northwind", "rendered after leaving the box: " + (await shape(0, 30)).text);
 
+  // ---- one shape that cannot be written must not block the others ----
+  await p.evaluate(() => {
+    const bad = __pp.mkShape({ id: 40, name: "Locked", type: "TextBox", text: "{{Client}}" });
+    const tr = bad.textFrame.textRange;
+    let text = tr.text;
+    // writing this text box fails on sync, like a locked/odd shape in PowerPoint
+    Object.defineProperty(tr, "text", { get: () => text, set: () => { window.__pendingError = true; } });
+    __pp.slides[1].shapes.push(bad);
+    __pp.slides[1].shapes.push(__pp.mkShape({ id: 41, name: "Normal", type: "TextBox", text: "Dear {{Client}}" }));
+  });
+  await p.click(".tab[data-tab=vars]");
+  await p.fill(varInput("Client"), "Tailspin"); await wait(1200);
+  check((await shape(1, 41)).text === "Dear Tailspin", "other shapes updated despite one failing: " + (await shape(1, 41)).text);
+  check(await txt(0, 0) === "New offer for Tailspin", "first slide updated too: " + await txt(0, 0));
+  check((await st()).includes("could not be updated"), "failure reported: " + await st());
+
+  // ---- diagnostics ----
+  await pick("#settings-slot .menu-btn", "Diagnostics");
+  const diag = await p.textContent("#diag-log");
+  check(diag.includes("Client=\"Tailspin\"") && diag.includes("update:") && diag.includes("could not write “Locked”"), "diagnostics shows state and events");
+  await p.click("#diag .dialog-head .icon-btn");
+  check(!(await p.isVisible("#diag")), "diagnostics closes");
+  await p.evaluate(() => { const sl = __pp.slides[1].shapes; sl.splice(sl.findIndex((x) => x.id === "40"), 1); });
+
   // ---- language + version ----
   check((await p.textContent('.tab[data-tab=vars] [data-i18n]')) === "Variables", "English UI by default");
   check(/^v\d+\.\d+\.\d+ · dev$/.test(await p.textContent("#version")), "version shown: " + await p.textContent("#version"));
