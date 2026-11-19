@@ -29,18 +29,18 @@
   // Bild hat kein Textfeld -> Zugriff wirft beim sync
   slides[1].shapes[1].textFrame = { get textRange(){ window.__badAccess = true; return { load(){ window.__pendingError = true; } }; } };
   let selection = { slide: 0, shapes: [] };
-  const coll = (arr) => ({ items: arr, load(){} });
+  const coll = (arr) => ({ items: arr, load(){}, getCount(){ return { value: arr.length }; }, getItemAt(i){ return arr[i]; } });
   const ctx = {
     presentation: {
       slides: { get items(){ return slides.map(s => ({ id: s.id, shapes: coll(s.shapes), setSelectedShapes(ids){ selection = { slide: slides.indexOf(s), shapes: ids }; } })); }, load(){},
         getItem(id){ const s = slides.find(x=>x.id===id); return { setSelectedShapes(ids){ selection = { slide: slides.indexOf(s), shapes: ids }; },
           shapes: { getItem(sid){ const sh = s.shapes.find(x => x.id === String(sid)); if (!sh) throw new Error("ItemNotFound"); return sh; } } }; } },
-      getSelectedShapes(){ const s = slides[selection.slide]; return coll(s.shapes.filter(x => selection.shapes.includes(x.id))); },
+      getSelectedShapes(){ if (window.__selFail > 0) { window.__selFail--; window.__pendingError = true; } const s = slides[selection.slide]; return coll(s.shapes.filter(x => selection.shapes.includes(x.id))); },
       getSelectedSlides(){ return coll([{ id: slides[selection.slide].id }]); },
       getSelectedTextRangeOrNullObject(){ const s = slides[selection.slide].shapes.find(x => selection.shapes.includes(x.id)); if(!s) return { isNullObject:true }; const tr = s.textFrame.textRange; return { isNullObject:false, set text(v){ tr.text += v; } }; },
       setSelectedSlides(ids){ selection = { slide: slides.findIndex(s=>s.id===ids[0]), shapes: [] }; },
     },
-    async sync(){ if (window.__pendingError){ window.__pendingError=false; throw Object.assign(new Error("InvalidArgument"),{code:"InvalidArgument"}); } },
+    async sync(){ if (window.__pendingError){ window.__pendingError=false; throw Object.assign(new Error("GeneralException"),{code:"GeneralException",debugInfo:{errorLocation:"ShapeScopedCollection.getItem"}}); } },
   };
   const handlers = [];
   window.__pp = { slides, mkShape, select(slide, ids){ selection = { slide, shapes: ids.map(String) }; handlers.forEach(h=>h()); } };

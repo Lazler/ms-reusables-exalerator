@@ -113,6 +113,15 @@ const root = path.join(__dirname, "..", "..", "addin");
   check(v.name === "◆ Karte / Grün ◆" && v.fill === "#008000", "Variante gewechselt: " + JSON.stringify(v));
   check(v.text === "Los für Northwind", "Anpassung bleibt beim Variantenwechsel: " + v.text);
 
+
+  // ---- GeneralException beim Auswahl-Lesen (PowerPoint im Web) ----
+  await p.evaluate(() => { window.__selFail = 1; __pp.select(1, [21]); }); await p.waitForTimeout(500);
+  check((await p.textContent("#sel-info")).includes("Instanz"), "Auswahl über Rückfallstufe gelesen: " + await p.textContent("#sel-info"));
+  await p.evaluate(() => { window.__selFail = 99; __pp.select(1, [21]); }); await p.waitForTimeout(500);
+  check((await p.textContent("#sel-info")).includes("nicht gelesen"), "unlesbare Auswahl -> Hinweis");
+  check(!(await p.getAttribute("#status", "class") || "").includes("err"), "kein roter Fehler bei unlesbarer Auswahl");
+  await p.evaluate(() => { window.__selFail = 0; __pp.select(1, [21]); }); await p.waitForTimeout(400);
+
   check(errors.length === 0, "keine JS-Fehler " + errors.join(" | "));
   console.log("Status:", await st());
   if (process.env.SHOT) { await p.setViewportSize({ width: 340, height: 900 }); await p.evaluate(() => __pp.select(1, [21])); await p.waitForTimeout(400); await p.screenshot({ path: process.env.SHOT }); }

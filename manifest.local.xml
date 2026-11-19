@@ -5,7 +5,7 @@
            xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
            xsi:type="TaskPaneApp">
   <Id>9f1d7c2e-5b0a-4f6e-8a51-3c2d7e4b6a10</Id>
-  <Version>0.3.0.0</Version>
+  <Version>0.3.1.0</Version>
   <ProviderName>Deck Components (privat)</ProviderName>
   <DefaultLocale>de-DE</DefaultLocale>
   <DisplayName DefaultValue="Deck Components (lokal)"/>

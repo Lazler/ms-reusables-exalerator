@@ -54,10 +54,14 @@ function debounce(fn, ms) {
 
 /** Alle PowerPoint-Aufrufe nacheinander ausführen, Fehler im Statusbereich zeigen. */
 let chain = Promise.resolve();
-function queue(fn) {
+function queue(label, fn) {
+  if (typeof label === "function") {
+    fn = label;
+    label = null;
+  }
   const p = chain.then(fn).catch((e) => {
-    console.error(e);
-    setStatus("Fehler: " + errText(e), "err");
+    console.error(label, e);
+    setStatus("Fehler" + (label ? " bei „" + label + "“" : "") + ": " + errText(e), "err");
   });
   chain = p;
   return p;
@@ -154,17 +158,61 @@ async function loadEach(ctx, items, loader) {
   }
 }
 
+/**
+ * Liest die aktuelle Auswahl. PowerPoint im Web wirft hier in manchen Zuständen
+ * eine GeneralException (Fokus in der Folienleiste, Text im Bearbeitungsmodus,
+ * Gruppen/Platzhalter). Deshalb mehrere Rückfallstufen statt Abbruch.
+ */
 async function getSelection(ctx) {
-  const shapes = ctx.presentation.getSelectedShapes();
-  shapes.load("items/id,items/name,items/type");
-  const slides = ctx.presentation.getSelectedSlides();
-  slides.load("items/id");
-  await ctx.sync();
-  const slideId = slides.items.length ? slides.items[0].id : null;
-  return {
-    slideId,
-    shapes: shapes.items.map((sh) => ({ shape: sh, id: sh.id, name: sh.name, type: sh.type, slideId })),
-  };
+  let slideId = null;
+  try {
+    const slides = ctx.presentation.getSelectedSlides();
+    slides.load("items/id");
+    await ctx.sync();
+    slideId = slides.items.length ? slides.items[0].id : null;
+  } catch (e) {
+    console.warn("Folienauswahl nicht lesbar", e);
+  }
+  const wrap = (sh, type) => ({ shape: sh, id: sh.id, name: sh.name, type, slideId });
+
+  // Stufe 1: alles in einem Rutsch
+  try {
+    const shapes = ctx.presentation.getSelectedShapes();
+    shapes.load("items/id,items/name,items/type");
+    await ctx.sync();
+    return { slideId, shapes: shapes.items.map((sh) => wrap(sh, sh.type)) };
+  } catch (e) {
+    console.warn("Auswahl Stufe 1 fehlgeschlagen", e);
+  }
+
+  // Stufe 2: Form für Form, Typ optional
+  const list = [];
+  try {
+    const shapes = ctx.presentation.getSelectedShapes();
+    const count = shapes.getCount();
+    await ctx.sync();
+    for (let i = 0; i < count.value; i++) {
+      try {
+        const sh = shapes.getItemAt(i);
+        sh.load("id,name");
+        await ctx.sync();
+        let type = "Unsupported";
+        try {
+          sh.load("type");
+          await ctx.sync();
+          type = sh.type;
+        } catch (_) {
+          /* Typ unbekannt */
+        }
+        list.push(wrap(sh, type));
+      } catch (e) {
+        console.warn("Form " + i + " der Auswahl nicht lesbar", e);
+      }
+    }
+  } catch (e) {
+    console.warn("Auswahl Stufe 2 fehlgeschlagen", e);
+  }
+  return { slideId, shapes: list, partial: true };
 }
 
 // ---------------------------------------------------------------- Variablen
@@ -244,7 +292,7 @@ async function applyVariables(ctx) {
 }
 
 function runApplyVariables() {
-  return queue(async () => {
+  return queue("Deck aktualisieren", async () => {
     setStatus("Aktualisiere …");
     const r = await PowerPoint.run(applyVariables);
     let msg = `${r.fields} Textfeld(er) mit Variablen, ${r.changed} geändert.`;
@@ -257,7 +305,7 @@ function runApplyVariables() {
 const applyVariablesSoon = debounce(runApplyVariables, 700);
 
 function scanPlaceholders() {
-  return queue(async () => {
+  return queue("Platzhalter finden", async () => {
     const names = await PowerPoint.run(async (ctx) => {
       const all = await loadShapes(ctx);
       const items = await loadEach(ctx, all.filter((s) => TEXT_TYPES.includes(s.type)), (it) => {
@@ -291,7 +339,7 @@ function scanPlaceholders() {
 }
 
 function insertPlaceholder(name) {
-  return queue(async () => {
+  return queue("Platzhalter einfügen", async () => {
     await PowerPoint.run(async (ctx) => {
       const tr = ctx.presentation.getSelectedTextRangeOrNullObject();
       await ctx.sync();
@@ -305,7 +353,7 @@ function insertPlaceholder(name) {
 
 function bindColor(name, kind) {
   const key = { fill: TAG.FILL, line: TAG.LINE, font: TAG.FONT }[kind];
-  return queue(async () => {
+  return queue("Farbe binden", async () => {
     const n = await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       if (!sel.shapes.length) throw new Error("Bitte zuerst eine oder mehrere Formen markieren.");
@@ -318,7 +366,7 @@ function bindColor(name, kind) {
 }
 
 function unbindColors() {
-  return queue(async () => {
+  return queue("Farbbindung lösen", async () => {
     const n = await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       const items = await loadEach(ctx, sel.shapes, (it) => {
@@ -524,7 +572,7 @@ async function syncComponents(ctx, names) {
 }
 
 function runSync(names) {
-  return queue(async () => {
+  return queue("Synchronisieren", async () => {
     setStatus("Synchronisiere …");
     const r = await PowerPoint.run((ctx) => syncComponents(ctx, names));
     await saveState();
@@ -535,7 +583,7 @@ function runSync(names) {
 }
 
 function refreshCompInfo() {
-  return queue(async () => {
+  return queue("Komponenten zählen", async () => {
     await PowerPoint.run(async (ctx) => {
       const all = await loadShapes(ctx);
       ui.compInfo = {};
@@ -571,7 +619,7 @@ function createComponent(key) {
   }
   const name = C.joinKey(parts.base, parts.variant);
   if (state.components[name]) return setStatus(`„${label(name)}“ existiert bereits.`, "err");
-  return queue(async () => {
+  return queue("Komponente anlegen", async () => {
     await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       if (sel.shapes.length !== 1) throw new Error("Bitte genau eine Form markieren.");
@@ -605,7 +653,7 @@ function createComponent(key) {
 }
 
 function linkSelection(name) {
-  return queue(async () => {
+  return queue("Als Instanz verknüpfen", async () => {
     const n = await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       const comp = state.components[name];
@@ -622,7 +670,7 @@ function linkSelection(name) {
 }
 
 function detachSelection() {
-  return queue(async () => {
+  return queue("Lösen", async () => {
     await PowerPoint.run(async (ctx) => {
       const sel = await getSelection(ctx);
       sel.shapes.forEach((s) => {
@@ -643,7 +691,7 @@ function detachSelection() {
 
 /** Ändert die Überschreibungen (Tag DC_OVR) einer Form. */
 function setOverride(s, key, mutate) {
-  return queue(async () => {
+  return queue("Anpassung speichern", async () => {
     await PowerPoint.run(async (ctx) => {
       const sh = shapeById(ctx, s);
       const t = loadTag(sh, TAG.OVR);
@@ -663,7 +711,7 @@ function setOverride(s, key, mutate) {
 }
 
 function switchVariant(s, newKey) {
-  return queue(async () => {
+  return queue("Variante wechseln", async () => {
     await PowerPoint.run(async (ctx) => {
       shapeById(ctx, s).name = C.componentShapeName(newKey);
       await ctx.sync();
@@ -682,7 +730,7 @@ function makeMaster(name, s) {
 }
 
 function deleteComponent(name) {
-  return queue(async () => {
+  return queue("Komponente löschen", async () => {
     await PowerPoint.run(async (ctx) => {
       const all = await loadShapes(ctx);
       all.filter((s) => C.componentNameOf(s.name) === name).forEach((s) => (s.shape.name = C.stripComponentName(s.name)));
@@ -698,7 +746,7 @@ function deleteComponent(name) {
 
 function showMaster(name) {
   const m = state.components[name].master;
-  return queue(async () => {
+  return queue("Master zeigen", async () => {
     await PowerPoint.run(async (ctx) => {
       ctx.presentation.setSelectedSlides([m.slideId]);
       await ctx.sync();
@@ -717,16 +765,27 @@ function isMasterOf(s) {
 }
 
 function refreshSelection() {
-  return queue(async () => {
-    const sel = await PowerPoint.run(async (ctx) => {
-      const sel = await getSelection(ctx);
-      if (sel.shapes.length === 1) {
-        const t = loadTag(sel.shapes[0].shape, TAG.OVR);
-        await ctx.sync();
-        sel.shapes[0].ovr = C.parseOverrides(tagVal(t));
-      }
-      return sel;
-    });
+  return queue("Auswahl lesen", async () => {
+    let sel;
+    try {
+      sel = await PowerPoint.run(async (ctx) => {
+        const sel = await getSelection(ctx);
+        if (sel.shapes.length === 1) {
+          try {
+            const t = loadTag(sel.shapes[0].shape, TAG.OVR);
+            await ctx.sync();
+            sel.shapes[0].ovr = C.parseOverrides(tagVal(t));
+          } catch (_) {
+            sel.shapes[0].ovr = C.parseOverrides(null);
+          }
+        }
+        return sel;
+      });
+    } catch (e) {
+      // Auswahl lesen ist passiv – kein roter Fehler, nur Hinweis
+      console.warn("Auswahl nicht lesbar", e);
+      sel = { slideId: null, shapes: [], unreadable: true };
+    }
     ui.lastSelection = ui.selection;
     ui.selection = sel;
     renderSelection();
@@ -808,7 +867,9 @@ function renderSelection() {
   act.replaceChildren();
   const sel = ui.selection;
   if (!sel || !sel.shapes.length) {
-    info.textContent = "Nichts ausgewählt.";
+    info.textContent = sel && (sel.unreadable || sel.partial)
+      ? "Auswahl konnte nicht gelesen werden. Klicke einmal direkt auf eine Form auf der Folie."
+      : "Nichts ausgewählt.";
     return;
   }
   const hasComps = Object.keys(state.components).length > 0;
